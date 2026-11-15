@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge&logo=rust" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?style=for-the-badge&logo=windows" />
   <img src="https://img.shields.io/badge/Architecture-Native-success?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Status-Phase%203%20of%207-yellow?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Status-Phase%204%20of%207-yellow?style=for-the-badge" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" />
 </p>
 
@@ -33,88 +33,96 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 | 1 | Project foundation and compilation | ✅ Done |
 | 2 | Native Win32 GUI | ✅ Done |
 | 3 | Core engine lifecycle: GoodBoyDPI (threaded) | ✅ Done |
-| 4 | Read-only network monitoring | ⏳ Next |
-| 5 | Logging (files, rotation, in-app view) and configuration UI | 🟡 Planned |
+| 4 | Read-only network monitoring and UI refinement | ✅ Done |
+| 5 | Logging (files, rotation, in-app view) and configuration UI | ⏳ Next |
 | 6 | Performance benchmarking | 🟡 Planned |
 | 7 | DPI research and controlled integration planning | 🔬 Research |
 
 ### Screenshots
 
-Captured automatically by `kalkan --self-test` on the Windows CI runner at 96 DPI:
+Captured automatically by `kalkan --self-test` on the Windows CI runner (CI run 15). The traffic is real and low, because the runner is idle:
 
 <p align="center">
-  <img src="docs/screenshots/dashboard-running.png" width="720" alt="KALKAN dashboard: GoodBoyDPI engine Running, with live CPU and memory of the KALKAN process; network is marked not available" />
+  <img src="docs/screenshots/dashboard-running.png" width="720" alt="Dashboard: GoodBoyDPI running, live download/upload/CPU/memory cards, active interface strip" />
 </p>
 
-| Duplicate Start is rejected | Logs page | Settings (real config values) |
-|---|---|---|
-| <img src="docs/screenshots/dashboard-duplicate-start.png" width="300" alt="Warning: Start ignored, the engine is already running" /> | <img src="docs/screenshots/logs.png" width="300" alt="Logs page" /> | <img src="docs/screenshots/settings.png" width="300" alt="Settings page" /> |
+| Network Monitoring (real interfaces) | Statistics (this session) |
+|---|---|
+| <img src="docs/screenshots/network-running.png" width="420" alt="Network page with download/upload graphs and the interface table" /> | <img src="docs/screenshots/statistics-running.png" width="420" alt="Statistics page" /> |
 
-At the minimum window size (760 × 560) the grid reflows and the engine's scope disclaimer stays fully readable:
+| 150 % display scaling (WM_DPICHANGED) | Minimum window size (760 × 600) |
+|---|---|
+| <img src="docs/screenshots/dashboard-150-percent.png" width="420" alt="Dashboard rendered at 144 DPI" /> | <img src="docs/screenshots/dashboard-minimum-size.png" width="380" alt="Dashboard at minimum size" /> |
 
-<p align="center"><img src="docs/screenshots/dashboard-minimum-size.png" width="380" alt="Dashboard at minimum size, engine stopped" /></p>
+The data badges mean:
+- **LIVE**: measured by the running engine.
+- **SYSTEM** / **CONFIG**: read from Windows or from `kalkan.toml`.
+- **NOT AVAILABLE**: no value exists. The card says why, for example "Start the engine to monitor network activity". KALKAN never shows invented numbers.
 
-**LIVE** values come from the running engine. **SYSTEM** and **CONFIG** values are read from Windows and from `kalkan.toml`. Values marked **NOT AVAILABLE** do not exist yet; KALKAN never shows invented numbers.
+### Network monitoring (read-only)
 
-### The engine: GoodBoyDPI
+KALKAN reads the interface counters Windows already keeps, using IP Helper `GetIfTable2`. **It never captures, injects, blocks or modifies packets**, and it needs no driver and no administrator rights.
 
-**GoodBoyDPI — Rust Core Engine** is the internal name of KALKAN's background engine.
-
-> **What it does today:** it starts and stops reliably on its own threads and measures KALKAN's own CPU time and memory. **It contains no DPI circumvention, packet capture or packet modification.** The name does not imply that functionality exists.
-
-* It uses two threads. `kalkan-engine` owns the lifecycle and is idle in a blocking receive. `goodboydpi-core` exists only while the engine is running.
-* The GUI is woken with `PostMessageW` and never polls.
-* The states are Stopped, Starting, Running, Stopping and Failed. Running is reported only after initialisation succeeds. Invalid commands are rejected with a warning, and failures show the real error.
-* Closing the window stops the engine first and waits for its confirmation, bounded by a timeout.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#the-engine-goodboydpi-kalkan-coreengine) for the threads, the message flow and the concurrency rules.
+* **What you see:** download and upload speed with 60-second graphs, session totals, peaks and averages, and every relevant interface with its type, link speed, connection status, live rates and cumulative received/sent bytes.
+* **No double counting.** Windows lists each physical adapter several times, once per NDIS filter driver, and those rows are dropped. Totals count each connected **hardware** adapter once:
+  - VPN and virtual adapters are listed but not counted, because their traffic also crosses a physical adapter.
+  - Adapters that **share a MAC address** with a counted one are listed as duplicates and not counted. This is the case for a Hyper-V NIC and its SR-IOV virtual function under accelerated networking.
+  - The CI runner has exactly this setup. Before the MAC rule, a 5 MB download showed as 10 MB.
+* **Robust counters:**
+  - Counter resets (driver reloads) count as 0, never as a spike.
+  - Adapters that are added, removed, connected or disconnected are reported in the notice bar, for example "Wi-Fi disconnected".
+  - A newly added adapter's lifetime bytes are not counted as session traffic.
+  - If the monitor fails, the reason is shown and process metrics keep working.
+* **Cost:** sampling runs on the existing engine worker in the same 1 s tick as process metrics. There is no extra thread or timer, and nothing runs while the engine is stopped.
+* `kalkan --interfaces` prints the same table in a terminal, which is useful for diagnosing a user's machine.
 
 ### What works today
 
 | Component | Status | Verified by |
 |---|---|---|
-| Cargo workspace, 7 crates, shared lints and release profile | ✅ | CI on Windows (MSVC) and Linux (cross-compile to `x86_64-pc-windows-gnu`) |
-| **GoodBoyDPI engine:** controller and worker threads, lifecycle, Start/Stop/QueryStatus/Shutdown, error and panic handling, bounded shutdown, no orphaned threads | ✅ | 31 unit tests in `kalkan-core`: every transition, duplicate and invalid commands, start failure and retry, panics, shutdown, thread termination, and randomized command storms (2 500 commands). Run 25× per CI build on Windows, plus 100 local runs and 30 under full CPU load on Linux |
-| Real process metrics: CPU % (one core = 100 %) and working set of KALKAN itself | ✅ | Windows unit test, and the self-test sees live samples about 1 s after Start |
-| **Native Win32 GUI** wired to the real engine: Start/Stop, live status, error and warning notices, two-step close | ✅ | 26 unit tests for the model, layout and theme, plus the 37-check `--self-test` with real button clicks, 10 start/stop cycles and close-while-running. Runs 3× per CI build on Windows |
-| GUI-mode logging to `%LOCALAPPDATA%\Kalkan\logs\kalkan.log` (one `.old` rollover above 5 MB), panic hook | ✅ | 5 unit tests. ⚠️ CI runs only console mode, so writing the file from a real GUI start has not been exercised on Windows yet |
-| TOML config with validation; `start_engine_on_launch` is honoured | ✅ | 12 config tests. ⚠️ The start-on-launch path is not covered by the self-test |
-| Read-only `NetworkMonitor` trait, counter and rate math | ✅ | 7 unit tests. Not used by the engine yet (Phase 4) |
-| `kalkan` CLI: `--version`, `--config`, `--check-config`, `--print-default-config`, `--self-test` | ✅ | 9 unit tests plus the CI smoke test with exit-code checks |
-| Start-up errors shown in a dialog when started from Explorer | ⚠️ | Code path compiles. Not exercised by CI |
+| GoodBoyDPI engine: controller and worker threads, lifecycle, Start/Stop/QueryStatus/Shutdown, errors, panics, bounded shutdown, no orphaned threads | ✅ | 36 engine tests, repeated 25× per CI build on Windows |
+| **Read-only network monitoring:** interfaces, rates, totals, peaks, adapter changes, resets, filter/virtual/same-MAC de-duplication | ✅ | 15 tracker tests with simulated adapters, 7 Windows-side classification tests, a real `GetIfTable2` test on Windows, and the CI end-to-end check: a 5,000,000-byte download made the counted bytes grow by 5,054,232 (1.01×; the rest is background traffic) |
+| Process metrics (KALKAN's own CPU and working set) | ✅ | Windows unit test and self-test |
+| **Refined native GUI:** teal design tokens, line icons, state pill, hover and hand cursor, runtime window icon, live Dashboard, Network page with graphs and interface table, Statistics, Logs, Settings | ✅ | 31 model/layout/theme tests (including WCAG AA contrast for every text/surface pair, and every page fitting at minimum size at 96 to 192 DPI), plus the **47-check** `--self-test`, run 3× per CI build |
+| Display scaling | ⚠️ partial | Layout is unit-tested at 96, 120, 144, 168 and 192 DPI. On Windows, the real DPI-change code path was exercised by sending `WM_DPICHANGED` (150 %, screenshot above). The runner's display itself is 96 DPI, so a real high-DPI monitor has not been tested |
+| GUI-mode log file, `start_engine_on_launch`, start-up error dialog | ⚠️ | Unit-tested where possible. Not exercised by CI, which runs only console paths |
 
-**Observed timings and memory (CI runner, one run, not a benchmark):**
-- Start → Running in 10 ms.
-- Stop → confirmed in 10 ms.
-- First CPU sample after 998 ms, matching the 1 s sample interval.
-- 10 start/stop cycles in about 190 ms.
-- After the self-test: working set 19.5 MiB (peak 20.5 MiB), private bytes 2.0 MiB.
+**Measurements.** These were taken on the GitHub Actions `windows-latest` VM, CI run 15 unless noted. They are single runs, not a controlled benchmark:
 
-Proper measurements, including idle CPU, are Phase 6.
+| What | Result |
+|---|---|
+| One network sample + tracker update (6 interfaces), n = 1000 | mean 647 µs, p99 1.18 ms wall; **0.42 ms CPU per sample**, about 0.04 % of one core at 1 Hz |
+| One process-metrics sample | 0.6 µs |
+| Engine stopped, 10 s | 0.0 ms CPU |
+| Engine running, 10 s (headless) | 0.0 ms here; 15.6 ms in run 13. Windows charges process CPU in about 15.6 ms ticks, so this window can only show 0 or 1 tick; the per-sample figure above is the better estimate |
+| Whole app with the **live Network page repainting** every second, 5 s | **0.31 % of one core** (runs 13 and 15) |
+| Working set: headless benchmark / GUI after the self-test | 6.6 MiB / about 20 MiB |
 
-**Windows runtime coverage so far:** everything above marked ✅ ran on the GitHub Actions `windows-latest` runner (Windows Server, 1024×768, 96 DPI, elevated). The following have **not** been tested yet:
+**Not tested yet:**
 - running on a Windows 10 or 11 desktop
-- running as a standard (non-elevated) user
-- high-DPI displays and `WM_DPICHANGED`
-- moving the window between monitors
+- a standard (non-elevated) user
+- real Wi-Fi, cellular or USB adapters
+- physically unplugging and re-plugging a cable
+- a real high-DPI monitor and moving the window between monitors
 - screen readers
+
+Wi-Fi, disconnects, reconnects, adapter removal and counter resets are covered by the simulated-adapter tests only.
 
 ### Not implemented yet
 
-- Network monitoring: interface counters via `GetIfTable2` (Phase 4). Network cards say "Not available".
 - The in-app log viewer, daily rotation and retention (`logging.max_log_files`), and settings editing (Phase 5).
-- Hover effects, an application icon resource, scrolling, light theme, system tray, gaming profile and benchmarks.
-- Any DPI-related functionality (Phase 7, research only).
+- Scrolling: very long interface lists are cut off with "+N more"; enlarge the window to see all of them. There is also no light theme and no system tray.
+- Any DPI-related functionality (Phase 7, research only). "DPI" in GoodBoyDPI is part of an internal name only.
 
 ## 🧠 Architecture
 
 ```
 kalkan-app ──► kalkan-gui ──► kalkan-core      GoodBoyDPI engine; GUI only speaks EngineLink
      │
-     ├──► kalkan-net      read-only monitor trait (no packet modification API)
+     ├──► kalkan-net      read-only counters → rates/totals (NetTracker), no packet API
      ├──► kalkan-config   TOML + validation
      ├──► kalkan-logging  tracing → stderr or log file
-     └──► kalkan-win      Windows queries (privileges, process CPU/memory, console)
+     └──► kalkan-win      Windows: GetIfTable2 monitor, privileges, process CPU/memory
 ```
 
 * **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: the full design, the lifecycle diagram, the threading model and the extension points.
@@ -148,6 +156,8 @@ Tests for the platform-independent crates run on any OS with `cargo test --works
 kalkan                                   # open the window
 kalkan --config my.toml                  # open the window with another config file
 kalkan --check-config                    # validate the config and exit
+kalkan --interfaces                      # list network interfaces and counters
+kalkan --benchmark                       # measure monitoring overhead (~25 s)
 kalkan --print-default-config > kalkan.toml
 kalkan --self-test --screenshots shots   # scripted UI check (used by CI)
 ```

@@ -246,3 +246,13 @@ fn columns_fill_width_and_drop_low_priority_when_narrow() {
     let kept: Vec<_> = tiny.iter().map(|c| c.index).collect();
     assert_eq!(kept, vec![0, 3, 4], "essential columns are never dropped");
 }
+
+#[test]
+fn nav_buttons_leave_the_sidebar_border_visible() {
+    for dpi in [96, 144] {
+        let l = compute(scale(1040, dpi), scale(680, dpi), dpi, DASH);
+        for n in l.nav {
+            assert_eq!(n.right(), l.sidebar.right() - 1, "dpi {dpi}");
+        }
+    }
+}

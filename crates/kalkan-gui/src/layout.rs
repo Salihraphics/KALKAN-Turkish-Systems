@@ -129,7 +129,8 @@ pub fn compute(client_w: i32, client_h: i32, dpi: u32, c: Content) -> Layout {
     let mut nav = [Rect::default(); 5];
     let mut y = logo.bottom();
     for r in &mut nav {
-        *r = Rect::new(0, y, sidebar.w, s(theme::NAV_H));
+        // Leave the sidebar's 1 px right border visible next to the buttons.
+        *r = Rect::new(0, y, (sidebar.w - 1).max(0), s(theme::NAV_H));
         y += s(theme::NAV_H) + s(theme::NAV_GAP);
     }
     let footer_h = s(theme::SIDEBAR_FOOTER_H);

@@ -33,10 +33,11 @@ kalkan/
                  kalkan-app
      ┌──────┬──────┼───────┬────────┬─────────┐
      ▼      ▼      ▼       ▼        ▼         ▼
-  gui ──► core    net    config ◄── logging   win
+  gui ──► core ──► net ◄── win    config ◄── logging
 ```
 
-* `kalkan-gui` depends **only** on `kalkan-core`. It cannot reach the network layer directly.
+* `kalkan-gui` depends **only** on `kalkan-core`. It sees network data through types that `kalkan-core` re-exports, and never calls the monitor.
+* `kalkan-net` holds the read-only monitor trait and the platform-independent tracker. `kalkan-win` implements the trait for Windows. Only the app connects the two.
 * `kalkan-core`, `kalkan-net` and `kalkan-config` are platform independent and are unit tested on any OS.
 * `kalkan-win` pulls in the `windows` crate only under `cfg(windows)`.
 
@@ -105,14 +106,36 @@ While the engine is stopped, two threads exist: the UI and the controller. The c
 |---|---|
 | `Start`, `Stop`, `QueryStatus`, `Shutdown` | `StateChanged{from,to}`, `EngineStarted`, `EngineStopped`, `EngineError{message}`, `DiagnosticMessage{level,message}`, `Status(EngineStatus)`, `ShutdownComplete` |
 
-`EngineStatus` metrics are `Option`s. They are `Some` only when measured, and they are cleared whenever the engine leaves `Running`.
+`EngineStatus` contains `cpu_percent`, `memory_bytes`, `network: Option<NetworkStatus>`, `network_error: Option<String>` and `running_for`. Each field is `Some` only when measured, and all of them are cleared whenever the engine leaves `Running`. Adapter changes arrive as `DiagnosticMessage` (Info), for example "Wi-Fi disconnected".
 
-## Network monitoring (Phase 4 plan)
+## Network monitoring (read-only)
 
-* Trait: `kalkan_net::NetworkMonitor` with `start`, `sample`, `stop`, and nothing that writes.
-* Windows implementation: IP Helper `GetIfTable2` (64-bit interface counters), sampled on the existing `goodboydpi-core` worker at the configured interval (default 1 s, minimum 250 ms).
-* Rates: `Rates::between` handles counter resets (it reports 0, not garbage), saturation and out-of-order samples.
-* No admin rights are needed for this. Elevation is detected and shown, but it is not required.
+```
+ goodboydpi-core worker, once per sample_interval (default 1 s):
+   WinNetworkMonitor::sample(&mut snapshot)      kalkan-win  (GetIfTable2 → FreeMibTable)
+     drops: NDIS filter rows, loopback, down non-hardware interfaces
+     fills: id (LUID), alias, description, kind, connected, hardware, MAC, In/OutOctets, link speed
+   NetTracker::update(&snapshot)                 kalkan-net  (pure, unit-tested)
+     per-interface rates (reset-safe), counted = connected ∧ hardware ∧ first-of-its-MAC
+     totals, session bytes, peaks, InterfaceChange (Added/Removed/Connected/Disconnected)
+   → WorkerMsg::Sample { process, net } → controller → Event::Status + DiagnosticMessage(s)
+```
+
+* **Read-only by construction.** The trait has a single `sample(&mut Snapshot)` method. There is no API for capturing, sending or modifying traffic. No admin rights or drivers are needed.
+* **Counting rules**, chosen to avoid double counting:
+  1. NDIS lightweight-filter rows repeat their NIC's counters, so they are dropped.
+  2. Non-hardware (VPN, virtual) interfaces are shown but not counted.
+  3. Connected hardware interfaces that share a **MAC address** count once. The lowest LUID wins, which keeps the choice stable across samples. The other interfaces are marked `duplicate_of`.
+
+  Rule 3 was added after CI run 13 measured a 5 MB download as 10 MB on an Azure VM. A Hyper-V synthetic NIC and its Mellanox SR-IOV VF both reported the traffic. CI now checks both bounds of a real 5,000,000-byte download (run 15: +5,054,232 bytes).
+* **Edge cases** (simulated-adapter tests in `kalkan-net/src/tests.rs`):
+  - A counter that goes backwards produces 0 for that interval.
+  - A new adapter has no rate until its second sample, and its lifetime bytes never appear as session traffic.
+  - With every adapter disconnected, the rate is a real 0.
+  - Renaming an adapter keeps its identity, which is the LUID.
+  - An empty list is safe.
+* **Failures.** If the monitor cannot be created, or a sample fails, the engine keeps running. `network_error` carries the reason, which the GUI shows. A warning is emitted once per failure streak, and stale numbers are never shown.
+* **Cost.** Measured on the CI VM with 6 interfaces: 0.42 ms CPU per sample, about 0.04 % of one core at 1 Hz. Sampling shares the worker's existing tick. While the engine is stopped, nothing runs.
 
 ## Configuration
 
