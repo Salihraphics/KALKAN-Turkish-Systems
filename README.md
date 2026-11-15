@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge&logo=rust" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?style=for-the-badge&logo=windows" />
   <img src="https://img.shields.io/badge/Architecture-Native-success?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Status-Phase%202%20of%207-yellow?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Status-Phase%203%20of%207-yellow?style=for-the-badge" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" />
 </p>
 
@@ -32,8 +32,8 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 |---|---|---|
 | 1 | Project foundation and compilation | ✅ Done |
 | 2 | Native Win32 GUI | ✅ Done |
-| 3 | Core engine lifecycle (threaded runner) | ⏳ Next |
-| 4 | Read-only network monitoring | 🟡 Planned |
+| 3 | Core engine lifecycle: GoodBoyDPI (threaded) | ✅ Done |
+| 4 | Read-only network monitoring | ⏳ Next |
 | 5 | Logging (files, rotation, in-app view) and configuration UI | 🟡 Planned |
 | 6 | Performance benchmarking | 🟡 Planned |
 | 7 | DPI research and controlled integration planning | 🔬 Research |
@@ -43,55 +43,74 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 Captured automatically by `kalkan --self-test` on the Windows CI runner at 96 DPI:
 
 <p align="center">
-  <img src="docs/screenshots/dashboard.png" width="720" alt="KALKAN dashboard after pressing Start: a notice says the engine is not implemented yet and nothing was started" />
+  <img src="docs/screenshots/dashboard-running.png" width="720" alt="KALKAN dashboard: GoodBoyDPI engine Running, with live CPU and memory of the KALKAN process; network is marked not available" />
 </p>
 
-| Settings (real config values) | Minimum window size (760 × 560) |
-|---|---|
-| <img src="docs/screenshots/settings.png" width="400" alt="Settings page" /> | <img src="docs/screenshots/dashboard-minimum-size.png" width="300" alt="Dashboard at minimum size" /> |
+| Duplicate Start is rejected | Logs page | Settings (real config values) |
+|---|---|---|
+| <img src="docs/screenshots/dashboard-duplicate-start.png" width="300" alt="Warning: Start ignored, the engine is already running" /> | <img src="docs/screenshots/logs.png" width="300" alt="Logs page" /> | <img src="docs/screenshots/settings.png" width="300" alt="Settings page" /> |
 
-Values marked **NOT AVAILABLE** do not exist yet; KALKAN never shows invented numbers. **SYSTEM** and **CONFIG** values are real, read from Windows and from `kalkan.toml`.
+**LIVE** values come from the running engine. **SYSTEM** and **CONFIG** values are read from Windows and from `kalkan.toml`. Values marked **NOT AVAILABLE** do not exist yet; KALKAN never shows invented numbers.
+
+### The engine: GoodBoyDPI
+
+**GoodBoyDPI — Rust Core Engine** is the internal name of KALKAN's background engine.
+
+> **What it does today:** it starts and stops reliably on its own threads and measures KALKAN's own CPU time and memory. **It contains no DPI circumvention, packet capture or packet modification.** The name does not imply that functionality exists.
+
+* It uses two threads. `kalkan-engine` owns the lifecycle and is idle in a blocking receive. `goodboydpi-core` exists only while the engine is running.
+* The GUI is woken with `PostMessageW` and never polls.
+* The states are Stopped, Starting, Running, Stopping and Failed. Running is reported only after initialisation succeeds. Invalid commands are rejected with a warning, and failures show the real error.
+* Closing the window stops the engine first and waits for its confirmation, bounded by a timeout.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#the-engine-goodboydpi-kalkan-coreengine) for the threads, the message flow and the concurrency rules.
 
 ### What works today
 
 | Component | Status | Verified by |
 |---|---|---|
 | Cargo workspace, 7 crates, shared lints and release profile | ✅ | CI on Windows (MSVC) and Linux (cross-compile to `x86_64-pc-windows-gnu`) |
-| Engine lifecycle state machine (`kalkan-core`) | ✅ | 6 unit tests, including an exhaustive transition table |
-| GUI ↔ engine protocol and `EngineLink`, with a stand-in engine that reports "nothing was started" | ✅ | 5 unit tests plus the GUI self-test |
-| TOML config: defaults, unknown-key rejection, range validation, atomic save | ✅ | 12 unit tests |
-| Logging initialisation (`tracing`, stderr) | ✅ | 2 unit tests |
-| Read-only `NetworkMonitor` trait, counter and rate math | ✅ | 7 unit tests |
-| Administrator-privilege detection and process memory counters (`kalkan-win`) | ✅ | Unit tests on the Windows CI runner |
-| **Native Win32 GUI:** sidebar with the 5 pages, Start/Stop placeholders, responsive card grid, minimum size, per-monitor DPI | ✅ | 22 unit tests for the model, layout and theme, plus the 22-check `--self-test` on a real window on Windows CI |
-| Start-up errors shown in a dialog when started from Explorer | ⚠️ | Code path compiles. Not exercised by CI, because CI runs only console paths |
-| `kalkan` CLI: `--version`, `--config`, `--check-config`, `--print-default-config`, `--self-test` | ✅ | 6 unit tests plus the CI smoke test with exit-code checks |
+| **GoodBoyDPI engine:** controller and worker threads, lifecycle, Start/Stop/QueryStatus/Shutdown, error and panic handling, bounded shutdown, no orphaned threads | ✅ | 31 unit tests in `kalkan-core`: every transition, duplicate and invalid commands, start failure and retry, panics, shutdown, thread termination, and randomized command storms (2 500 commands). Run 25× per CI build on Windows, plus 100 local runs and 30 under full CPU load on Linux |
+| Real process metrics: CPU % (one core = 100 %) and working set of KALKAN itself | ✅ | Windows unit test, and the self-test sees live samples about 1 s after Start |
+| **Native Win32 GUI** wired to the real engine: Start/Stop, live status, error and warning notices, two-step close | ✅ | 26 unit tests for the model, layout and theme, plus the 37-check `--self-test` with real button clicks, 10 start/stop cycles and close-while-running. Runs 3× per CI build on Windows |
+| GUI-mode logging to `%LOCALAPPDATA%\Kalkan\logs\kalkan.log` (one `.old` rollover above 5 MB), panic hook | ✅ | 5 unit tests. ⚠️ CI runs only console mode, so writing the file from a real GUI start has not been exercised on Windows yet |
+| TOML config with validation; `start_engine_on_launch` is honoured | ✅ | 12 config tests. ⚠️ The start-on-launch path is not covered by the self-test |
+| Read-only `NetworkMonitor` trait, counter and rate math | ✅ | 7 unit tests. Not used by the engine yet (Phase 4) |
+| `kalkan` CLI: `--version`, `--config`, `--check-config`, `--print-default-config`, `--self-test` | ✅ | 9 unit tests plus the CI smoke test with exit-code checks |
+| Start-up errors shown in a dialog when started from Explorer | ⚠️ | Code path compiles. Not exercised by CI |
+
+**Observed timings and memory (CI runner, one run, not a benchmark):**
+- Start → Running in 10 ms.
+- Stop → confirmed in 10 ms.
+- First CPU sample after 998 ms, matching the 1 s sample interval.
+- 10 start/stop cycles in about 190 ms.
+- After the self-test: working set 19.5 MiB (peak 20.5 MiB), private bytes 2.0 MiB.
+
+Proper measurements, including idle CPU, are Phase 6.
 
 **Windows runtime coverage so far:** everything above marked ✅ ran on the GitHub Actions `windows-latest` runner (Windows Server, 1024×768, 96 DPI, elevated). The following have **not** been tested yet:
 - running on a Windows 10 or 11 desktop
-- high-DPI displays and `WM_DPICHANGED` (CI has only 96 DPI)
+- running as a standard (non-elevated) user
+- high-DPI displays and `WM_DPICHANGED`
 - moving the window between monitors
 - screen readers
 
-**Memory, as observed once:** after the self-test run, the working set was 17.4 MiB (peak 20.6 MiB) and private bytes were 1.9 MiB. This is one observation on a CI runner, not a benchmark. Proper measurements are Phase 6.
-
 ### Not implemented yet
 
-- Engine thread and real Start/Stop (Phase 3). The buttons are placeholders and say so.
-- CPU and memory metrics on the Dashboard (Phase 3), and real network counters via `GetIfTable2` (Phase 4).
-- Log files, rotation and the in-app log view (Phase 5). **In GUI mode, log output is not captured anywhere yet.**
-- Editing settings in the app (Phase 5). The Settings page is read-only.
+- Network monitoring: interface counters via `GetIfTable2` (Phase 4). Network cards say "Not available".
+- The in-app log viewer, daily rotation and retention (`logging.max_log_files`), and settings editing (Phase 5).
 - Hover effects, an application icon resource, scrolling, light theme, system tray, gaming profile and benchmarks.
+- Any DPI-related functionality (Phase 7, research only).
 
 ## 🧠 Architecture
 
 ```
-kalkan-app ──► kalkan-gui ──► kalkan-core      (GUI only speaks EngineLink: Command/Event)
+kalkan-app ──► kalkan-gui ──► kalkan-core      GoodBoyDPI engine; GUI only speaks EngineLink
      │
      ├──► kalkan-net      read-only monitor trait (no packet modification API)
      ├──► kalkan-config   TOML + validation
-     ├──► kalkan-logging  tracing
-     └──► kalkan-win      Windows queries (privileges, memory, console)
+     ├──► kalkan-logging  tracing → stderr or log file
+     └──► kalkan-win      Windows queries (privileges, process CPU/memory, console)
 ```
 
 * **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: the full design, the lifecycle diagram, the threading model and the extension points.

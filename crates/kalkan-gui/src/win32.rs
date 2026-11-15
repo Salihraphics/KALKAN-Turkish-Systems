@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontIndirectW, CreatePen,
     CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect, GetDC,
@@ -31,7 +32,7 @@ use windows::Win32::Graphics::Gdi::{
     DEFAULT_CHARSET, DIB_RGB_COLORS, DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS,
     DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_NORMAL,
     FW_SEMIBOLD, HBRUSH, HDC, HGDIOBJ, LOGFONTW, NULL_BRUSH, NULL_PEN, PAINTSTRUCT, PS_SOLID,
-    RDW_ALLCHILDREN, RDW_INVALIDATE, SRCCOPY, TRANSPARENT,
+    RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -1665,6 +1666,20 @@ fn self_test(hwnd: HWND, shots: Option<&Path>) -> SelfTestReport {
 
 /// Save the window's client area (including child controls) as a 32-bit BMP.
 fn capture_client(hwnd: HWND, path: &Path) -> Result<(), String> {
+    // PrintWindow(PW_RENDERFULLCONTENT) returns the last frame composed by
+    // DWM, which can lag one repaint behind a resize. Repaint synchronously
+    // (no window-state borrow is held here) and wait for the next DWM
+    // composition so the capture shows the current layout.
+    // SAFETY: plain calls on our own window from the UI thread.
+    unsafe {
+        let _ = RedrawWindow(
+            Some(hwnd),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+        );
+        let _ = DwmFlush();
+    }
     let mut rc = RECT::default();
     // SAFETY: valid window; out-pointer on the stack.
     unsafe { GetClientRect(hwnd, &mut rc) }.map_err(|e| e.message())?;
