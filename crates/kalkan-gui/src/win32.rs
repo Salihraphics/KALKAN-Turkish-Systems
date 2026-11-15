@@ -22,49 +22,56 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontIndirectW, CreatePen,
-    CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect, GetDC,
-    GetDIBits, GetStockObject, Polygon, RedrawWindow, ReleaseDC, RoundRect, SelectObject,
-    SetBkMode, SetTextColor, UpdateWindow, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLEARTYPE_QUALITY,
-    DEFAULT_CHARSET, DIB_RGB_COLORS, DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS,
-    DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_NORMAL,
-    FW_SEMIBOLD, HBRUSH, HDC, HGDIOBJ, LOGFONTW, NULL_BRUSH, NULL_PEN, PAINTSTRUCT, PS_SOLID,
-    RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, SRCCOPY, TRANSPARENT,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontIndirectW, DeleteDC,
+    DeleteObject, EndPaint, GetDC, GetDIBits, InvalidateRect, RedrawWindow, ReleaseDC,
+    SelectObject, UpdateWindow, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLEARTYPE_QUALITY,
+    DEFAULT_CHARSET, DIB_RGB_COLORS, FW_NORMAL, FW_SEMIBOLD, HGDIOBJ, LOGFONTW, PAINTSTRUCT,
+    RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, SRCCOPY,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::{
-    DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED, ODT_BUTTON,
-};
+use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, WM_MOUSELEAVE};
 use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, GetDpiForSystem, GetDpiForWindow, SetProcessDpiAwarenessContext,
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, IsWindowEnabled, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, IsDialogMessageW, KillTimer, LoadCursorW, MessageBoxW, MoveWindow,
-    PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, BM_CLICK, BS_OWNERDRAW,
-    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW,
-    MB_ICONERROR, MB_OK, MINMAXINFO, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
-    SW_HIDE, SW_MAXIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWMINNOACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WM_TIMER, WNDCLASSEXW,
-    WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+    CallWindowProcW, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW,
+    GetClientRect, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect,
+    IsDialogMessageW, KillTimer, LoadCursorW, MessageBoxW, MoveWindow, PeekMessageW, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SendMessageW, SetCursor, SetTimer, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, TranslateMessage, BM_CLICK, BS_OWNERDRAW, CREATESTRUCTW, CS_HREDRAW,
+    CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HICON, HMENU, ICON_BIG, ICON_SMALL,
+    IDC_ARROW, IDC_HAND, MB_ICONERROR, MB_OK, MINMAXINFO, MSG, PM_REMOVE, SM_CXICON, SM_CXSMICON,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_HIDE, SW_MAXIMIZE, SW_RESTORE, SW_SHOW,
+    SW_SHOWMINNOACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE,
+    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_MOUSEMOVE,
+    WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETICON, WM_SIZE, WM_TIMER, WNDCLASSEXW,
+    WNDPROC, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 
-use kalkan_core::{Command, EngineLink, EngineState, ENGINE_SCOPE, ENGINE_TITLE};
+use kalkan_core::{Command, EngineLink, EngineState};
 
-use crate::layout::{self, Content, Layout, Rect};
-use crate::model::{page_view, AppInfo, NoticeKind, Page, PageView, UiState, Value};
-use crate::theme::{self, scale, Rgb};
+use crate::layout::{self, Content, Layout};
+use crate::model::{page_view, AppInfo, NoticeKind, Page, PageView, UiState};
+use crate::theme::{self, scale};
 use crate::{Check, GuiError, RunOptions, SelfTestReport};
 
+#[path = "win32_paint.rs"]
+mod paint;
+
 const CLASS_NAME: PCWSTR = w!("KalkanMainWindow");
+
+thread_local! {
+    /// The owner-drawn button under the mouse (0 = none). UI thread only.
+    static HOVERED: Cell<isize> = const { Cell::new(0) };
+}
 /// Posted by an engine link when events are waiting (used from Phase 3).
 pub const WM_APP_ENGINE: u32 = WM_APP + 1;
 
@@ -89,11 +96,6 @@ impl Drop for Gdi {
             let _ = DeleteObject(self.0);
         }
     }
-}
-
-fn brush(c: Rgb) -> Gdi {
-    // SAFETY: plain GDI object creation, no pointers involved.
-    Gdi(unsafe { CreateSolidBrush(COLORREF(c.colorref())) }.into())
 }
 
 struct Fonts {
@@ -142,15 +144,6 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-fn to_rect(r: Rect) -> RECT {
-    RECT {
-        left: r.x,
-        top: r.y,
-        right: r.right(),
-        bottom: r.bottom(),
-    }
-}
-
 fn win_err(call: &'static str, e: windows::core::Error) -> GuiError {
     GuiError::Win32 {
         call,
@@ -160,196 +153,6 @@ fn win_err(call: &'static str, e: windows::core::Error) -> GuiError {
 
 fn loword(v: usize) -> u16 {
     (v & 0xFFFF) as u16
-}
-
-// ── Drawing helpers (operate on a valid HDC) ─────────────────────────────────
-
-struct Painter<'a> {
-    hdc: HDC,
-    dpi: u32,
-    fonts: &'a Fonts,
-}
-
-impl Painter<'_> {
-    fn s(&self, dip: i32) -> i32 {
-        scale(dip, self.dpi)
-    }
-
-    fn fill(&self, r: Rect, c: Rgb) {
-        let b = brush(c);
-        // SAFETY: valid DC and brush; RECT lives for the call.
-        unsafe { FillRect(self.hdc, &to_rect(r), HBRUSH(b.0 .0)) };
-    }
-
-    /// Filled rounded rectangle without an outline.
-    fn round(&self, r: Rect, c: Rgb, radius: i32) {
-        let b = brush(c);
-        let d = self.s(radius) * 2;
-        // SAFETY: valid DC; selected objects are restored before `b` drops.
-        unsafe {
-            let old_b = SelectObject(self.hdc, b.0);
-            let old_p = SelectObject(self.hdc, GetStockObject(NULL_PEN));
-            // NULL_PEN draws nothing on the edge, so extend by 1 px to cover it.
-            let _ = RoundRect(self.hdc, r.x, r.y, r.right() + 1, r.bottom() + 1, d, d);
-            SelectObject(self.hdc, old_p);
-            SelectObject(self.hdc, old_b);
-        }
-    }
-
-    /// Rounded rectangle with a 1 px border.
-    fn round_outline(&self, r: Rect, fill: Rgb, border: Rgb, radius: i32) {
-        let b = brush(fill);
-        // SAFETY: plain pen creation.
-        let p = Gdi(unsafe { CreatePen(PS_SOLID, 1, COLORREF(border.colorref())) }.into());
-        let d = self.s(radius) * 2;
-        // SAFETY: valid DC; selections restored before the objects drop.
-        unsafe {
-            let old_b = SelectObject(self.hdc, b.0);
-            let old_p = SelectObject(self.hdc, p.0);
-            let _ = RoundRect(self.hdc, r.x, r.y, r.right(), r.bottom(), d, d);
-            SelectObject(self.hdc, old_p);
-            SelectObject(self.hdc, old_b);
-        }
-    }
-
-    /// Unfilled rounded outline (keyboard focus indicator), 2 px wide.
-    fn ring(&self, r: Rect, c: Rgb, radius: i32) {
-        // SAFETY: plain pen creation.
-        let pen = Gdi(unsafe { CreatePen(PS_SOLID, self.s(2), COLORREF(c.colorref())) }.into());
-        let d = self.s(radius) * 2;
-        // SAFETY: valid DC; selections restored before the pen drops.
-        unsafe {
-            let old_b = SelectObject(self.hdc, GetStockObject(NULL_BRUSH));
-            let old_p = SelectObject(self.hdc, pen.0);
-            let _ = RoundRect(
-                self.hdc,
-                r.x + 1,
-                r.y + 1,
-                r.right() - 1,
-                r.bottom() - 1,
-                d,
-                d,
-            );
-            SelectObject(self.hdc, old_p);
-            SelectObject(self.hdc, old_b);
-        }
-    }
-
-    fn dot(&self, cx: i32, cy: i32, radius: i32, c: Rgb) {
-        let b = brush(c);
-        // SAFETY: valid DC; selections restored.
-        unsafe {
-            let old_b = SelectObject(self.hdc, b.0);
-            let old_p = SelectObject(self.hdc, GetStockObject(NULL_PEN));
-            let _ = Ellipse(
-                self.hdc,
-                cx - radius,
-                cy - radius,
-                cx + radius + 1,
-                cy + radius + 1,
-            );
-            SelectObject(self.hdc, old_p);
-            SelectObject(self.hdc, old_b);
-        }
-    }
-
-    fn polygon(&self, pts: &[POINT], c: Rgb) {
-        let b = brush(c);
-        // SAFETY: valid DC; `pts` outlives the call; selections restored.
-        unsafe {
-            let old_b = SelectObject(self.hdc, b.0);
-            let old_p = SelectObject(self.hdc, GetStockObject(NULL_PEN));
-            let _ = Polygon(self.hdc, pts);
-            SelectObject(self.hdc, old_p);
-            SelectObject(self.hdc, old_b);
-        }
-    }
-
-    fn text(&self, s: &str, r: Rect, font: &Gdi, c: Rgb, flags: DRAW_TEXT_FORMAT) {
-        let mut buf: Vec<u16> = s.encode_utf16().collect();
-        let mut rc = to_rect(r);
-        // SAFETY: valid DC; `buf` and `rc` outlive the call; font restored.
-        unsafe {
-            let old = SelectObject(self.hdc, font.0);
-            SetTextColor(self.hdc, COLORREF(c.colorref()));
-            SetBkMode(self.hdc, TRANSPARENT);
-            DrawTextW(self.hdc, &mut buf, &mut rc, flags | DT_NOPREFIX);
-            SelectObject(self.hdc, old);
-        }
-    }
-
-    /// Width of `s` in pixels when drawn with `font`.
-    fn measure(&self, s: &str, font: &Gdi) -> i32 {
-        let mut buf: Vec<u16> = s.encode_utf16().collect();
-        let mut rc = RECT::default();
-        // SAFETY: valid DC; DT_CALCRECT only measures; font restored.
-        unsafe {
-            let old = SelectObject(self.hdc, font.0);
-            DrawTextW(
-                self.hdc,
-                &mut buf,
-                &mut rc,
-                DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX,
-            );
-            SelectObject(self.hdc, old);
-        }
-        rc.right - rc.left
-    }
-
-    fn line(&self, s: &str, r: Rect, font: &Gdi, c: Rgb) {
-        self.text(
-            s,
-            r,
-            font,
-            c,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-        );
-    }
-
-    /// Small pill badge, right-aligned at `right`, vertically centred on `cy`.
-    /// Returns its width.
-    fn badge(&self, label: &str, right: i32, cy: i32, fg: Rgb, bg: Rgb) -> i32 {
-        let w = self.measure(label, &self.fonts.small) + self.s(14);
-        let h = self.s(20);
-        let r = Rect::new(right - w, cy - h / 2, w, h);
-        self.round(r, bg, 6);
-        self.text(
-            label,
-            r,
-            &self.fonts.small,
-            fg,
-            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-        );
-        w
-    }
-
-    /// KALKAN shield mark inside a square of side `size` at (x, y).
-    fn shield(&self, x: i32, y: i32, size: i32) {
-        let p = |fx: f32, fy: f32| POINT {
-            x: x + (fx * size as f32) as i32,
-            y: y + (fy * size as f32) as i32,
-        };
-        let outer = [
-            p(0.5, 0.0),
-            p(0.95, 0.15),
-            p(0.9, 0.6),
-            p(0.5, 1.0),
-            p(0.1, 0.6),
-            p(0.05, 0.15),
-        ];
-        self.polygon(&outer, theme::ACCENT);
-        let inner = [p(0.5, 0.16), p(0.8, 0.26), p(0.76, 0.58), p(0.5, 0.84)];
-        self.polygon(&inner, Rgb(0x93, 0xC5, 0xFD));
-    }
-}
-
-fn state_color(s: EngineState) -> Rgb {
-    match s {
-        EngineState::Stopped => theme::NEUTRAL,
-        EngineState::Starting | EngineState::Stopping => theme::WARN,
-        EngineState::Running => theme::OK,
-        EngineState::Failed => theme::DANGER,
-    }
 }
 
 // ── Window state ─────────────────────────────────────────────────────────────
@@ -373,6 +176,8 @@ struct WindowState {
     closing: bool,
     /// The engine did not confirm in time; close anyway.
     close_forced: bool,
+    /// Window/taskbar icons created at runtime; destroyed on drop.
+    icons: Vec<HICON>,
     /// Set to `true` when the state is dropped (clean shutdown check).
     dropped: Rc<Cell<bool>>,
     /// Records whether the engine confirmed shutdown before the window died.
@@ -383,6 +188,13 @@ impl Drop for WindowState {
     fn drop(&mut self) {
         self.shutdown_confirmed.set(self.ui.shutdown_complete);
         self.dropped.set(true);
+        for icon in self.icons.drain(..) {
+            // SAFETY: icons we created with CreateIconIndirect; the window
+            // that used them is being destroyed.
+            unsafe {
+                let _ = DestroyIcon(icon);
+            }
+        }
         // Dropping `engine` joins the engine threads (EngineHandle::drop).
     }
 }
@@ -407,8 +219,10 @@ impl WindowState {
         Content {
             engine_panel: self.view.engine_panel,
             notice: self.view.engine_panel && self.ui.notice.is_some(),
+            tiles: self.view.tiles.len(),
             cards: self.view.cards.len(),
-            table_rows: self.view.table.len(),
+            strip: !self.view.strip.is_empty(),
+            table_rows: self.view.table.as_ref().map(|t| t.rows.len()),
             note: self.view.note.is_some(),
         }
     }
@@ -484,8 +298,12 @@ impl WindowState {
                 structural |= changed;
             }
         }
-        // Periodic metric updates only repaint the page that shows them.
-        if structural || (metrics && self.ui.page == Page::Dashboard) {
+        // Periodic metric updates only repaint pages that show live data.
+        let live_page = matches!(
+            self.ui.page,
+            Page::Dashboard | Page::Network | Page::Statistics
+        );
+        if structural || (metrics && live_page) {
             self.relayout();
         }
         if self.closing && self.ui.shutdown_complete {
@@ -536,288 +354,9 @@ impl WindowState {
     fn on_dpi_changed(&mut self, dpi: u32) {
         self.dpi = dpi;
         self.fonts = Fonts::new(dpi);
-        // Layout happens in the WM_SIZE that follows SetWindowPos.
-    }
-
-    // ── Painting ─────────────────────────────────────────────────────────────
-
-    fn paint(&self, hdc: HDC) {
-        let p = Painter {
-            hdc,
-            dpi: self.dpi,
-            fonts: &self.fonts,
-        };
-        let l = &self.layout;
-        let s = |d| p.s(d);
-
-        p.fill(l.client, theme::BG);
-
-        // Sidebar
-        p.fill(l.sidebar, theme::SIDEBAR);
-        let mark = s(30);
-        let lx = s(20);
-        let ly = l.logo.y + (l.logo.h - mark) / 2;
-        p.shield(lx, ly, mark);
-        let tx = lx + mark + s(12);
-        p.line(
-            "KALKAN",
-            Rect::new(tx, ly - s(4), l.logo.w - tx, s(22)),
-            &self.fonts.brand,
-            theme::TEXT,
-        );
-        p.line(
-            &format!("v{}", self.info.version),
-            Rect::new(tx, ly + s(18), l.logo.w - tx, s(16)),
-            &self.fonts.small,
-            theme::TEXT_MUTED,
-        );
-        let f = l.sidebar_footer;
-        p.dot(f.x + s(26), f.y + s(18), s(4), state_color(self.ui.engine));
-        p.line(
-            &format!("Engine: {}", self.ui.engine),
-            Rect::new(f.x + s(38), f.y + s(8), f.w - s(46), s(20)),
-            &self.fonts.small,
-            theme::TEXT_MUTED,
-        );
-        p.line(
-            crate::model::privilege_value(self.info.elevated).text(),
-            Rect::new(f.x + s(38), f.y + s(28), f.w - s(46), s(20)),
-            &self.fonts.small,
-            theme::TEXT_MUTED,
-        );
-
-        // Header
-        let h = l.header;
-        p.line(
-            self.ui.page.label(),
-            Rect::new(h.x, h.y, h.w, s(36)),
-            &self.fonts.title,
-            theme::TEXT,
-        );
-        p.line(
-            self.ui.page.subtitle(),
-            Rect::new(h.x, h.y + s(38), h.w, s(22)),
-            &self.fonts.body,
-            theme::TEXT_MUTED,
-        );
-
-        if let (Some(r), Some(n)) = (l.notice, &self.ui.notice) {
-            let (bg, fg) = match n.kind {
-                NoticeKind::Info => (theme::NOTICE_INFO_BG, theme::ACCENT),
-                NoticeKind::Warning => (theme::NOTICE_WARN_BG, theme::WARN),
-                NoticeKind::Error => (theme::NOTICE_ERROR_BG, theme::DANGER),
-            };
-            p.round(r, bg, 8);
-            p.fill(Rect::new(r.x, r.y + s(8), s(3), r.h - s(16)), fg);
-            p.line(
-                &n.message,
-                Rect::new(r.x + s(16), r.y, r.w - s(24), r.h),
-                &self.fonts.body,
-                theme::TEXT,
-            );
-        }
-
-        if let Some(r) = l.engine_panel {
-            p.round_outline(r, theme::CARD, theme::CARD_BORDER, theme::RADIUS);
-            let btn_left = l.start_btn.map_or(r.right(), |b| b.x);
-            let text_w = (btn_left - r.x - s(36)).max(0);
-            p.line(
-                ENGINE_TITLE,
-                Rect::new(r.x + s(20), r.y + s(12), text_w, s(20)),
-                &self.fonts.body_bold,
-                theme::TEXT_MUTED,
-            );
-            let cy = r.y + s(50);
-            p.dot(r.x + s(28), cy, s(6), state_color(self.ui.engine));
-            let label = if self.closing && !self.ui.shutdown_complete {
-                "Shutting down…"
-            } else {
-                self.ui.engine.label()
-            };
-            p.line(
-                label,
-                Rect::new(r.x + s(44), cy - s(14), (text_w - s(24)).max(0), s(28)),
-                &self.fonts.value,
-                theme::TEXT,
-            );
-            // The scope line sits below the buttons, so it may use the full
-            // panel width: this disclaimer must stay readable at any size.
-            p.line(
-                ENGINE_SCOPE,
-                Rect::new(
-                    r.x + s(20),
-                    r.y + s(theme::PANEL_SCOPE_Y),
-                    (r.w - s(40)).max(0),
-                    s(20),
-                ),
-                &self.fonts.small,
-                theme::TEXT_MUTED,
-            );
-        }
-
-        for (card, r) in self.view.cards.iter().zip(&l.cards) {
-            p.round_outline(*r, theme::CARD, theme::CARD_BORDER, theme::RADIUS);
-            let inner = r.inset(s(16));
-            let (badge_fg, badge_bg, value_c) = match &card.value {
-                Value::Real { .. } => (theme::OK, Rgb(0x14, 0x2E, 0x22), theme::TEXT),
-                Value::Unavailable { .. } => {
-                    (theme::WARN, Rgb(0x33, 0x27, 0x10), theme::TEXT_DISABLED)
-                }
-            };
-            let badge_w = p.badge(
-                card.value.badge(),
-                inner.right(),
-                inner.y + s(10),
-                badge_fg,
-                badge_bg,
-            );
-            p.line(
-                card.title,
-                Rect::new(inner.x, inner.y, (inner.w - badge_w - s(8)).max(0), s(20)),
-                &self.fonts.body_bold,
-                theme::TEXT_MUTED,
-            );
-            p.line(
-                card.value.text(),
-                Rect::new(inner.x, inner.y + s(26), inner.w, s(30)),
-                &self.fonts.value,
-                value_c,
-            );
-            p.line(
-                &card.detail,
-                Rect::new(inner.x, inner.y + s(60), inner.w, s(20)),
-                &self.fonts.small,
-                theme::TEXT_MUTED,
-            );
-        }
-
-        if let Some(r) = l.table {
-            p.round_outline(r, theme::CARD, theme::CARD_BORDER, theme::RADIUS);
-            let row_h = s(theme::ROW_H);
-            let key_w = (r.w / 2).min(s(280));
-            for (i, (k, v)) in self.view.table.iter().enumerate() {
-                let y = r.y + s(4) + i as i32 * row_h;
-                if i > 0 {
-                    p.fill(
-                        Rect::new(r.x + s(16), y, r.w - s(32), 1),
-                        theme::CARD_BORDER,
-                    );
-                }
-                p.line(
-                    k,
-                    Rect::new(r.x + s(16), y, key_w, row_h),
-                    &self.fonts.body,
-                    theme::TEXT_MUTED,
-                );
-                p.text(
-                    v,
-                    Rect::new(r.x + s(16) + key_w, y, r.w - key_w - s(32), row_h),
-                    &self.fonts.body,
-                    theme::TEXT,
-                    DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-                );
-            }
-        }
-
-        if let (Some(r), Some(note)) = (l.note, self.view.note) {
-            p.text(
-                note,
-                r,
-                &self.fonts.small,
-                theme::TEXT_MUTED,
-                DT_LEFT | DT_WORDBREAK,
-            );
-        }
-    }
-
-    fn draw_item(&self, dis: &DRAWITEMSTRUCT) {
-        if dis.CtlType != ODT_BUTTON {
-            return;
-        }
-        let p = Painter {
-            hdc: dis.hDC,
-            dpi: self.dpi,
-            fonts: &self.fonts,
-        };
-        let rc = dis.rcItem;
-        let r = Rect::new(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
-        let pressed = dis.itemState.0 & ODS_SELECTED.0 != 0;
-        let disabled = dis.itemState.0 & ODS_DISABLED.0 != 0;
-        let focus = dis.itemState.0 & ODS_FOCUS.0 != 0 && dis.itemState.0 & ODS_NOFOCUSRECT.0 == 0;
-        let id = dis.CtlID as u16;
-
-        if (ID_NAV_BASE..ID_NAV_BASE + 5).contains(&id) {
-            let page = Page::from_index((id - ID_NAV_BASE) as usize).unwrap_or(Page::Dashboard);
-            let active = page == self.ui.page;
-            p.fill(r, theme::SIDEBAR);
-            let bg = if pressed {
-                theme::SIDEBAR_PRESSED
-            } else if active {
-                theme::SIDEBAR_ACTIVE
-            } else {
-                theme::SIDEBAR
-            };
-            let pill = Rect::new(r.x + p.s(8), r.y, r.w - p.s(16), r.h);
-            if bg != theme::SIDEBAR {
-                p.round(pill, bg, 8);
-            }
-            if active {
-                p.round(
-                    Rect::new(pill.x, pill.y + p.s(10), p.s(3), pill.h - p.s(20)),
-                    theme::ACCENT,
-                    2,
-                );
-            }
-            let fg = if active {
-                theme::TEXT
-            } else {
-                theme::TEXT_MUTED
-            };
-            let font = if active {
-                &self.fonts.body_bold
-            } else {
-                &self.fonts.body
-            };
-            p.line(
-                page.label(),
-                Rect::new(pill.x + p.s(16), r.y, pill.w - p.s(20), r.h),
-                font,
-                fg,
-            );
-            if focus {
-                p.ring(pill, theme::ACCENT, 8);
-            }
-            return;
-        }
-
-        let (label, primary) = match id {
-            ID_START => ("Start", true),
-            ID_STOP => ("Stop", false),
-            _ => return,
-        };
-        p.fill(r, theme::CARD);
-        let (bg, border, fg) = match (primary, disabled, pressed) {
-            (_, true, _) => (theme::CARD, theme::CARD_BORDER, theme::TEXT_DISABLED),
-            (true, false, false) => (theme::ACCENT, theme::ACCENT, Rgb(0xFF, 0xFF, 0xFF)),
-            (true, false, true) => (
-                theme::ACCENT_PRESSED,
-                theme::ACCENT_PRESSED,
-                Rgb(0xFF, 0xFF, 0xFF),
-            ),
-            (false, false, false) => (theme::CARD, theme::TEXT_MUTED, theme::TEXT),
-            (false, false, true) => (theme::SIDEBAR_PRESSED, theme::TEXT_MUTED, theme::TEXT),
-        };
-        p.round_outline(r, bg, border, 8);
-        p.text(
-            label,
-            r,
-            &self.fonts.body_bold,
-            fg,
-            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-        );
-        if focus {
-            p.ring(r.inset(p.s(2)), Rgb(0xFF, 0xFF, 0xFF), 6);
-        }
+        // Re-layout now (the window size may not change, so WM_SIZE may not
+        // follow); WM_SIZE re-lays out again if it does.
+        self.relayout();
     }
 }
 
@@ -968,6 +507,45 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     }
 }
 
+/// Subclass procedure for our owner-drawn buttons: hover tracking and a hand
+/// cursor. The original BUTTON procedure is kept in the button's
+/// GWLP_USERDATA (unused by BUTTON) and called for everything.
+extern "system" fn button_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let me = hwnd.0 as isize;
+    // SAFETY: all calls target `hwnd`, a live button we subclassed on the UI
+    // thread; GWLP_USERDATA holds its original window procedure.
+    unsafe {
+        match msg {
+            WM_MOUSEMOVE if HOVERED.with(|h| h.get()) != me => {
+                let prev = HOVERED.with(|h| h.replace(me));
+                if prev != 0 {
+                    let _ = InvalidateRect(Some(HWND(prev as *mut c_void)), None, false);
+                }
+                let mut tme = TRACKMOUSEEVENT {
+                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                let _ = TrackMouseEvent(&mut tme);
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+            WM_MOUSELEAVE if HOVERED.with(|h| h.get()) == me => {
+                HOVERED.with(|h| h.set(0));
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+            WM_SETCURSOR => {
+                SetCursor(LoadCursorW(None, IDC_HAND).ok());
+                return LRESULT(1);
+            }
+            _ => {}
+        }
+        let orig = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        let orig: WNDPROC = std::mem::transmute::<isize, WNDPROC>(orig);
+        CallWindowProcW(orig, hwnd, msg, wp, lp)
+    }
+}
+
 fn create_button(parent: HWND, hinst: HINSTANCE, id: u16, text: &str) -> Result<HWND, GuiError> {
     let text = wide(text);
     // SAFETY: valid parent; `text` outlives the call; the control ID travels in
@@ -989,6 +567,15 @@ fn create_button(parent: HWND, hinst: HINSTANCE, id: u16, text: &str) -> Result<
         )
     }
     .map_err(|e| win_err("CreateWindowExW(BUTTON)", e))
+    .inspect(|&btn| {
+        // SAFETY: subclassing our own new child; the original procedure is
+        // stored first so `button_proc` can always forward to it.
+        unsafe {
+            let orig = GetWindowLongPtrW(btn, GWLP_WNDPROC);
+            SetWindowLongPtrW(btn, GWLP_USERDATA, orig);
+            SetWindowLongPtrW(btn, GWLP_WNDPROC, button_proc as *const () as isize);
+        }
+    })
 }
 
 fn on_create(hwnd: HWND, lp: LPARAM) -> Result<(), GuiError> {
@@ -1015,6 +602,25 @@ fn on_create(hwnd: HWND, lp: LPARAM) -> Result<(), GuiError> {
     }
     let start_btn = create_button(hwnd, hinst, ID_START, "Start")?;
     let stop_btn = create_button(hwnd, hinst, ID_STOP, "Stop")?;
+
+    // Window and taskbar icons, drawn at runtime (no resource file).
+    let mut icons = Vec::new();
+    for (which, metric) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)] {
+        // SAFETY: plain query.
+        let size = unsafe { GetSystemMetrics(metric) }.max(16);
+        if let Some(icon) = paint::make_shield_icon(size) {
+            // SAFETY: WM_SETICON on our own window with an icon we own.
+            unsafe {
+                SendMessageW(
+                    hwnd,
+                    WM_SETICON,
+                    Some(WPARAM(which as usize)),
+                    Some(LPARAM(icon.0 as isize)),
+                );
+            }
+            icons.push(icon);
+        }
+    }
 
     // Take ownership out of CreateParams.
     let info = std::mem::take(&mut cp.info);
@@ -1057,6 +663,7 @@ fn on_create(hwnd: HWND, lp: LPARAM) -> Result<(), GuiError> {
         view: PageView::default(),
         layout: Layout::default(),
         wake_pending,
+        icons,
         closing: false,
         close_forced: false,
         dropped: cp.dropped.clone(),
@@ -1282,7 +889,11 @@ pub fn run(
     }
 
     let report = if opts.self_test {
-        Some(self_test(hwnd, opts.screenshot_dir.as_deref()))
+        Some(self_test(
+            hwnd,
+            opts.screenshot_dir.as_deref(),
+            opts.cpu_time,
+        ))
     } else {
         None
     };
@@ -1394,8 +1005,51 @@ fn wait_until(hwnd: HWND, timeout: Duration, pred: impl Fn(&WindowState) -> bool
 }
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_TIMER_ID: usize = 99;
 
-fn self_test(hwnd: HWND, shots: Option<&Path>) -> SelfTestReport {
+/// Run a normal blocking message loop (GetMessageW) for `d`, so measurements
+/// see the application's real idle behaviour rather than a polling loop.
+fn run_message_loop_for(hwnd: HWND, d: Duration) {
+    // SAFETY: a one-shot timer on our own window; GetMessageW/Dispatch is the
+    // standard loop on the UI thread; the timer is killed before returning.
+    unsafe {
+        SetTimer(Some(hwnd), TEST_TIMER_ID, d.as_millis() as u32, None);
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+            if msg.message == WM_TIMER && msg.hwnd == hwnd && msg.wParam.0 == TEST_TIMER_ID {
+                break;
+            }
+            if !IsDialogMessageW(hwnd, &msg).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        let _ = KillTimer(Some(hwnd), TEST_TIMER_ID);
+    }
+}
+
+/// Simulate the window moving to a monitor with `dpi` (WM_DPICHANGED with the
+/// current window rectangle as the suggestion).
+fn simulate_dpi(hwnd: HWND, dpi: u32) {
+    let mut rc = RECT::default();
+    // SAFETY: valid window; `rc` outlives the synchronous SendMessageW.
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut rc);
+        SendMessageW(
+            hwnd,
+            WM_DPICHANGED,
+            Some(WPARAM((dpi | (dpi << 16)) as usize)),
+            Some(LPARAM(&rc as *const RECT as isize)),
+        );
+    }
+    pump();
+}
+
+fn self_test(
+    hwnd: HWND,
+    shots: Option<&Path>,
+    cpu_time: Option<fn() -> Option<Duration>>,
+) -> SelfTestReport {
     let mut r = SelfTestReport::default();
     let mut check = |name: String, passed: bool| {
         tracing::info!(passed, "self-test: {name}");
@@ -1497,14 +1151,105 @@ fn self_test(hwnd: HWND, shots: Option<&Path>) -> SelfTestReport {
         ),
         live,
     );
-    let no_net = with_state(hwnd, |s| {
-        s.ui.status.rx_bytes_per_sec.is_none() && s.ui.status.tx_bytes_per_sec.is_none()
+    // ── Real network monitoring (GetIfTable2 on this machine) ────────────
+    let t0 = Instant::now();
+    let have_net = wait_until(hwnd, STEP_TIMEOUT, |s| s.ui.status.network.is_some());
+    let (n_if, names, err) = with_state(hwnd, |s| {
+        let n = s.ui.status.network.as_ref();
+        (
+            n.map_or(0, |n| n.interfaces.len()),
+            n.map_or(String::new(), |n| {
+                n.interfaces
+                    .iter()
+                    .map(|i| {
+                        format!(
+                            "{} [{}{}]",
+                            i.name,
+                            i.kind.label(),
+                            if i.counted { ", counted" } else { "" }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }),
+            s.ui.status.network_error.clone(),
+        )
+    })
+    .unwrap_or_default();
+    check(
+        format!("network monitor reports real interfaces ({} ms): {n_if} found: {names}; error: {err:?}", t0.elapsed().as_millis()),
+        have_net && n_if > 0,
+    );
+    let counted = with_state(hwnd, |s| {
+        s.ui.status
+            .network
+            .as_ref()
+            .is_some_and(|n| n.interfaces.iter().any(|i| i.counted))
     });
     check(
-        "no network values reported (monitor is Phase 4)".into(),
-        no_net == Some(true),
+        "at least one connected hardware interface is counted".into(),
+        counted == Some(true),
+    );
+    let t0 = Instant::now();
+    let rates = wait_until(hwnd, STEP_TIMEOUT, |s| {
+        s.ui.status
+            .network
+            .as_ref()
+            .is_some_and(|n| n.rx_rate.is_some() && n.tx_rate.is_some())
+    });
+    check(
+        format!(
+            "download/upload rates computed from two real samples ({} ms)",
+            t0.elapsed().as_millis()
+        ),
+        rates,
+    );
+    let dash_live = with_state(hwnd, |s| {
+        let v = page_view(Page::Dashboard, &s.ui, &s.info);
+        v.cards[0].value.is_real() && v.cards[1].value.is_real() && v.strip[0].value.is_real()
+    });
+    check(
+        "Dashboard shows live download, upload and active interface".into(),
+        dash_live == Some(true),
     );
     capture("6-dashboard-running");
+
+    // Live Network and Statistics pages (graphs need a few samples).
+    click(nav[Page::Network.index()]);
+    wait_until(hwnd, STEP_TIMEOUT, |s| s.ui.history.len() >= 3);
+    let table_rows =
+        with_state(hwnd, |s| s.view.table.as_ref().map_or(0, |t| t.rows.len())).unwrap_or(0);
+    check(
+        format!("Network page lists the interfaces ({table_rows} rows)"),
+        table_rows == n_if && n_if > 0,
+    );
+    capture("6a-network-running");
+    click(nav[Page::Statistics.index()]);
+    let stats_live = with_state(hwnd, |s| {
+        page_view(Page::Statistics, &s.ui, &s.info).cards[0]
+            .value
+            .is_real()
+    });
+    check(
+        "Statistics shows live session totals".into(),
+        stats_live == Some(true),
+    );
+    capture("6b-statistics-running");
+
+    // CPU of the whole process (engine sampling + GUI repainting the live
+    // Network page) over 5 s, using a real blocking message loop.
+    click(nav[Page::Network.index()]);
+    if let Some(cpu) = cpu_time {
+        let (c0, t0) = (cpu(), Instant::now());
+        run_message_loop_for(hwnd, Duration::from_secs(5));
+        let (c1, wall) = (cpu(), t0.elapsed());
+        if let (Some(c0), Some(c1)) = (c0, c1) {
+            let pct = c1.saturating_sub(c0).as_secs_f64() / wall.as_secs_f64() * 100.0;
+            // A sanity bound against busy loops, not a performance target.
+            check(format!("process CPU while running with live Network page: {pct:.2} % of one core over {:.1} s (bound: < 15 %)", wall.as_secs_f64()), pct < 15.0);
+        }
+    }
+    click(nav[0]);
 
     // Duplicate Start (bypassing the disabled button) is rejected by the engine.
     with_state_mut(hwnd, |s| s.send(Command::Start));
@@ -1648,6 +1393,21 @@ fn self_test(hwnd: HWND, shots: Option<&Path>) -> SelfTestReport {
         format!("layout follows restore to {w}x{h}"),
         layout_matches((w, h)),
     );
+
+    // ── Display scaling: simulate moving to a 150 % monitor and back ──────
+    for (dpi, name) in [(144u32, "10-dashboard-150-percent"), (96, "")] {
+        simulate_dpi(hwnd, dpi);
+        let (got, w, h) =
+            with_state(hwnd, |s| (s.dpi, s.layout.client.w, s.layout.client.h)).unwrap_or_default();
+        let (aw, ah) = actual_client();
+        check(
+            format!("WM_DPICHANGED to {dpi} DPI: fonts and layout rebuilt (layout {w}x{h}, client {aw}x{ah})"),
+            got == dpi && (w, h) == (aw, ah),
+        );
+        if !name.is_empty() {
+            capture(name);
+        }
+    }
 
     // ── Close while running: the app must stop the engine first ──────────
     click(start);

@@ -39,6 +39,7 @@ fn spec_with(
     EngineSpec {
         sample_interval: FAST,
         probe: Arc::new(f),
+        network: None,
     }
 }
 
@@ -279,7 +280,7 @@ fn query_status_when_stopped_has_no_metrics() {
     };
     assert_eq!(s.state, Some(EngineState::Stopped));
     assert!(s.cpu_percent.is_none() && s.memory_bytes.is_none());
-    assert!(s.rx_bytes_per_sec.is_none() && s.tx_bytes_per_sec.is_none());
+    assert!(s.network.is_none() && s.network_error.is_none() && s.running_for.is_none());
     shutdown_clean(h);
 }
 
@@ -422,7 +423,11 @@ fn metrics_are_real_samples_while_running_and_cleared_after_stop() {
     assert_eq!(s.state, Some(EngineState::Running));
     assert!(s.memory_bytes.unwrap() > 1_000_000);
     assert!(s.cpu_percent.unwrap() >= 0.0);
-    assert!(s.rx_bytes_per_sec.is_none(), "no network data in Phase 3");
+    assert!(
+        s.network.is_none(),
+        "no network monitor configured in this spec"
+    );
+    assert!(s.running_for.is_some());
     stop_stopped(&mut h);
     h.send(Command::QueryStatus);
     let evs = until(&mut h, |e| matches!(e, Event::Status(_)));
@@ -636,4 +641,183 @@ fn randomized_command_storm_keeps_lifecycle_consistent() {
         h.shutdown(T).unwrap();
         assert_eq!(h.threads_alive(), 0, "seed {seed}");
     }
+}
+
+// ── Network monitoring through the engine ────────────────────────────────────
+
+use kalkan_net::{InterfaceKind, InterfaceSample, MonitorError, NetworkMonitor, Snapshot};
+
+/// Scripted monitor: each sample adds `step` bytes to the Ethernet counters;
+/// Wi-Fi disappears from sample `drop_wifi_at` on.
+struct ScriptedNet {
+    n: u64,
+    step: u64,
+    drop_wifi_at: Option<u64>,
+    fail_from: Option<u64>,
+}
+
+impl NetworkMonitor for ScriptedNet {
+    fn name(&self) -> &'static str {
+        "scripted"
+    }
+    fn sample(&mut self, out: &mut Snapshot) -> Result<(), MonitorError> {
+        self.n += 1;
+        if self.fail_from.is_some_and(|f| self.n >= f) {
+            return Err(MonitorError::Os {
+                call: "GetIfTable2",
+                code: 87,
+            });
+        }
+        out.at = Instant::now();
+        out.interfaces.clear();
+        let mk = |id, name: &str, kind, rx| InterfaceSample {
+            id,
+            name: name.into(),
+            description: String::new(),
+            kind,
+            connected: true,
+            hardware: true,
+            rx_bytes: rx,
+            tx_bytes: rx / 2,
+            link_speed_bps: None,
+        };
+        out.interfaces.push(mk(
+            1,
+            "Ethernet",
+            InterfaceKind::Ethernet,
+            self.n * self.step,
+        ));
+        if self.drop_wifi_at.is_none_or(|d| self.n < d) {
+            out.interfaces.push(mk(2, "Wi-Fi", InterfaceKind::WiFi, 0));
+        }
+        Ok(())
+    }
+}
+
+fn net_spec(
+    make: impl Fn() -> Result<Box<dyn NetworkMonitor>, String> + Send + Sync + 'static,
+) -> EngineSpec {
+    EngineSpec {
+        network: Some(Arc::new(make)),
+        ..ok_spec()
+    }
+}
+
+fn scripted(
+    step: u64,
+    drop_wifi_at: Option<u64>,
+    fail_from: Option<u64>,
+) -> Box<dyn NetworkMonitor> {
+    Box::new(ScriptedNet {
+        n: 0,
+        step,
+        drop_wifi_at,
+        fail_from,
+    })
+}
+
+#[test]
+fn network_rates_and_totals_flow_to_status() {
+    let mut h = spawn(net_spec(|| Ok(scripted(10_000, None, None))));
+    start_running(&mut h);
+    let evs = until(
+        &mut h,
+        |e| matches!(e, Event::Status(s) if s.network.as_ref().is_some_and(|n| n.rx_rate.is_some_and(|r| r > 0))),
+    );
+    let Some(Event::Status(s)) = evs.last() else {
+        unreachable!()
+    };
+    let n = s.network.as_ref().unwrap();
+    assert_eq!(n.interfaces.len(), 2);
+    assert!(n.session_rx_bytes >= 10_000);
+    assert!(s.network_error.is_none());
+    stop_stopped(&mut h);
+    h.send(Command::QueryStatus);
+    let evs = until(&mut h, |e| matches!(e, Event::Status(_)));
+    let Some(Event::Status(s)) = evs.last() else {
+        unreachable!()
+    };
+    assert!(
+        s.network.is_none(),
+        "network data is cleared when the engine stops"
+    );
+    shutdown_clean(h);
+}
+
+#[test]
+fn adapter_changes_become_info_diagnostics() {
+    let mut h = spawn(net_spec(|| Ok(scripted(1, Some(3), None))));
+    start_running(&mut h);
+    let evs = until(&mut h, |e| matches!(e, Event::DiagnosticMessage { .. }));
+    let Some(Event::DiagnosticMessage { level, message }) = evs.last() else {
+        unreachable!()
+    };
+    assert_eq!(
+        (*level, message.as_str()),
+        (DiagLevel::Info, "Network adapter removed: Wi-Fi")
+    );
+    shutdown_clean(h);
+}
+
+#[test]
+fn network_monitor_init_failure_is_not_fatal_and_is_explained() {
+    let mut h = spawn(net_spec(|| Err("IP Helper unavailable (test)".into())));
+    let evs = start_running(&mut h);
+    assert!(states(&evs).contains(&(EngineState::Starting, EngineState::Running)));
+    let evs = until(
+        &mut h,
+        |e| matches!(e, Event::Status(s) if s.network_error.is_some()),
+    );
+    let Some(Event::Status(s)) = evs.last() else {
+        unreachable!()
+    };
+    assert!(s.network.is_none());
+    assert_eq!(
+        s.network_error.as_deref(),
+        Some("IP Helper unavailable (test)")
+    );
+    assert!(s.memory_bytes.is_some(), "process metrics still work");
+    assert_eq!(
+        diag(&evs),
+        vec!["Network data unavailable: IP Helper unavailable (test)"]
+    );
+    shutdown_clean(h);
+}
+
+#[test]
+fn network_sample_failure_clears_numbers_reports_once_and_keeps_running() {
+    let mut h = spawn(net_spec(|| Ok(scripted(100, None, Some(3)))));
+    start_running(&mut h);
+    let evs = until(
+        &mut h,
+        |e| matches!(e, Event::Status(s) if s.network_error.is_some()),
+    );
+    let Some(Event::Status(s)) = evs.last() else {
+        unreachable!()
+    };
+    assert!(s.network.is_none(), "no stale numbers after a failure");
+    assert!(s.network_error.as_deref().unwrap().contains("GetIfTable2"));
+    // Several more failing ticks: still exactly one warning, still Running.
+    let mut more = Vec::new();
+    for _ in 0..4 {
+        more.extend(until(&mut h, |e| matches!(e, Event::Status(_))));
+    }
+    let all: Vec<_> = evs.iter().chain(more.iter()).cloned().collect();
+    assert_eq!(diag(&all).len(), 1, "{:#?}", diag(&all));
+    assert!(states(&more).is_empty());
+    shutdown_clean(h);
+}
+
+#[test]
+fn running_for_is_reported_by_the_engine() {
+    let mut h = spawn(ok_spec());
+    start_running(&mut h);
+    thread::sleep(Duration::from_millis(60));
+    h.send(Command::QueryStatus);
+    let evs = until(
+        &mut h,
+        |e| matches!(e, Event::Status(s) if s.running_for.is_some_and(|d| d >= Duration::from_millis(50))),
+    );
+    assert!(!evs.is_empty());
+    shutdown_clean(h);
 }

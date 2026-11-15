@@ -14,7 +14,7 @@
 //!                              ◄──────────Msg::Worker(Ready)──────────────────────┘
 //!  waker() ◄── emit(Event) ─── Starting → Running
 //!  try_recv()                                                     recv_timeout(interval)
-//!                              ◄──────────Msg::Worker(Sample)──── sample CPU/memory
+//!                              ◄──────────Msg::Worker(Sample)──── sample CPU/memory + network
 //!  send(Stop) ──────────────►  Running → Stopping ─WorkerCtl::Stop─► loop exits
 //!                              ◄──────────Msg::Worker(Exited)──── (drop guard, always)
 //!                              join() → Stopping → Stopped
@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 use crate::lifecycle::{EngineState, Lifecycle, Transition, TransitionError};
 use crate::link::{EngineLink, Waker};
 use crate::protocol::{Command, DiagLevel, EngineStatus, Event};
+use kalkan_net::{InterfaceChange, NetTracker, NetworkMonitor, NetworkStatus, Snapshot};
 
 /// Internal engine name. It does **not** imply DPI functionality.
 pub const ENGINE_NAME: &str = "GoodBoyDPI";
@@ -80,12 +81,19 @@ pub trait ProcessProbe: Send {
 /// failure that is reported to the user.
 pub type ProbeFactory = Arc<dyn Fn() -> Result<Box<dyn ProcessProbe>, String> + Send + Sync>;
 
+/// Creates the read-only network monitor during worker initialisation. An
+/// `Err` is **not** fatal: the engine runs and reports why network data is
+/// unavailable.
+pub type NetworkFactory = Arc<dyn Fn() -> Result<Box<dyn NetworkMonitor>, String> + Send + Sync>;
+
 /// Engine configuration.
 #[derive(Clone)]
 pub struct EngineSpec {
-    /// Interval between metric samples while Running.
+    /// Interval between samples (process metrics and network) while Running.
     pub sample_interval: Duration,
     pub probe: ProbeFactory,
+    /// `None` = network monitoring not configured.
+    pub network: Option<NetworkFactory>,
 }
 
 impl std::fmt::Debug for EngineSpec {
@@ -117,9 +125,43 @@ enum Msg {
 enum WorkerMsg {
     Ready,
     InitFailed(String),
-    Sample(ProcessSample, Option<f32>),
-    SampleError(String),
+    /// One tick: process metrics (or why they failed) and network data.
+    Sample {
+        process: Result<(ProcessSample, Option<f32>), String>,
+        net: Option<NetUpdate>,
+    },
     Exited,
+}
+
+#[derive(Debug)]
+struct NetUpdate {
+    status: Result<NetworkStatus, String>,
+    changes: Vec<InterfaceChange>,
+}
+
+/// The worker's network side: monitor + tracker + a reused snapshot buffer.
+struct NetSampler {
+    monitor: Box<dyn NetworkMonitor>,
+    tracker: NetTracker,
+    snap: Snapshot,
+}
+
+impl NetSampler {
+    fn sample(&mut self) -> NetUpdate {
+        match self.monitor.sample(&mut self.snap) {
+            Ok(()) => {
+                let (status, changes) = self.tracker.update(&self.snap);
+                NetUpdate {
+                    status: Ok(status),
+                    changes,
+                }
+            }
+            Err(e) => NetUpdate {
+                status: Err(e.to_string()),
+                changes: Vec::new(),
+            },
+        }
+    }
 }
 
 enum WorkerCtl {
@@ -171,13 +213,8 @@ fn panic_message(p: &(dyn Any + Send)) -> String {
 
 // ── Worker ───────────────────────────────────────────────────────────────────
 
-fn worker_main(
-    gen: u64,
-    interval: Duration,
-    factory: ProbeFactory,
-    ctl: Receiver<WorkerCtl>,
-    tx: Sender<Msg>,
-) {
+fn worker_main(gen: u64, spec: EngineSpec, ctl: Receiver<WorkerCtl>, tx: Sender<Msg>) {
+    let interval = spec.sample_interval;
     // Declared first so it is dropped last: `Exited` is the final message.
     let _exit = ExitGuard {
         tx: tx.clone(),
@@ -188,7 +225,7 @@ fn worker_main(
     };
 
     tracing::info!(gen, "engine worker initialising");
-    let mut probe = match factory() {
+    let mut probe = match (spec.probe)() {
         Ok(p) => p,
         Err(e) => return send(WorkerMsg::InitFailed(e)),
     };
@@ -201,9 +238,38 @@ fn worker_main(
         }
     };
 
+    // Network monitoring is optional: a failure here is reported, not fatal.
+    let mut net_init_error = None;
+    let mut net = match spec.network.as_ref().map(|f| f()) {
+        Some(Ok(monitor)) => {
+            tracing::info!(monitor = monitor.name(), "network monitor initialised");
+            Some(NetSampler {
+                monitor,
+                tracker: NetTracker::new(),
+                snap: Snapshot::empty(),
+            })
+        }
+        Some(Err(e)) => {
+            tracing::warn!(error = %e, "network monitor unavailable");
+            net_init_error = Some(e);
+            None
+        }
+        None => None,
+    };
+    let net_update = |net: &mut Option<NetSampler>, init_err: &Option<String>| match net {
+        Some(n) => Some(n.sample()),
+        None => init_err.as_ref().map(|e| NetUpdate {
+            status: Err(e.clone()),
+            changes: Vec::new(),
+        }),
+    };
+
     // Initialisation succeeded. Only now may the engine report Running.
     send(WorkerMsg::Ready);
-    send(WorkerMsg::Sample(first, None));
+    send(WorkerMsg::Sample {
+        process: Ok((first, None)),
+        net: net_update(&mut net, &net_init_error),
+    });
 
     let mut prev = (Instant::now(), first);
     let mut next = prev.0 + interval;
@@ -218,18 +284,24 @@ fn worker_main(
                 if next <= now {
                     next = now + interval;
                 }
-                match probe.sample() {
+                let process = match probe.sample() {
                     Ok(s) => {
                         let cpu = cpu_percent(prev.1.cpu_time, s.cpu_time, now - prev.0);
-                        send(WorkerMsg::Sample(s, cpu));
                         prev = (now, s);
+                        Ok((s, cpu))
                     }
-                    Err(e) => send(WorkerMsg::SampleError(e)),
-                }
+                    Err(e) => Err(e),
+                };
+                send(WorkerMsg::Sample {
+                    process,
+                    net: net_update(&mut net, &net_init_error),
+                });
             }
         }
     }
-    drop(probe); // release resources before announcing exit
+    // Release resources before announcing exit.
+    drop(net);
+    drop(probe);
     tracing::info!(gen, "engine worker stopped");
 }
 
@@ -254,6 +326,9 @@ struct Controller {
     /// Start-up error reported by the current worker, applied on `Exited`.
     init_error: Option<String>,
     sample_error_reported: bool,
+    net_error_reported: bool,
+    /// When the current run entered Running (for `EngineStatus::running_for`).
+    running_since: Option<Instant>,
     status: EngineStatus,
     alive: Arc<AtomicUsize>,
 }
@@ -281,10 +356,16 @@ impl Controller {
         let (from, to) = self.lc.apply(t)?;
         tracing::info!(%from, %to, "engine state changed");
         self.status.state = Some(to);
-        if to != EngineState::Running {
+        if to == EngineState::Running {
+            self.running_since = Some(Instant::now());
+        } else {
             // Metrics describe a running engine only.
+            self.running_since = None;
             self.status.cpu_percent = None;
             self.status.memory_bytes = None;
+            self.status.network = None;
+            self.status.network_error = None;
+            self.status.running_for = None;
         }
         self.emit(Event::StateChanged { from, to });
         Ok(())
@@ -324,19 +405,15 @@ impl Controller {
         self.gen += 1;
         self.init_error = None;
         self.sample_error_reported = false;
+        self.net_error_reported = false;
         let (ctl_tx, ctl_rx) = mpsc::channel();
-        let (gen, interval, factory, tx) = (
-            self.gen,
-            self.spec.sample_interval,
-            self.spec.probe.clone(),
-            self.tx.clone(),
-        );
+        let (gen, spec, tx) = (self.gen, self.spec.clone(), self.tx.clone());
         let alive = self.alive.clone();
         let spawned = thread::Builder::new()
             .name("goodboydpi-core".into())
             .spawn(move || {
                 let _count = ThreadCount::new(&alive);
-                worker_main(gen, interval, factory, ctl_rx, tx);
+                worker_main(gen, spec, ctl_rx, tx);
             });
         match spawned {
             Ok(handle) => {
@@ -367,11 +444,7 @@ impl Controller {
                 }
                 Err(e) => self.reject(cmd, e),
             },
-            Command::QueryStatus => {
-                let mut s = self.status.clone();
-                s.state = Some(self.lc.state());
-                self.emit(Event::Status(s));
-            }
+            Command::QueryStatus => self.emit_status(),
             Command::Shutdown => {
                 self.shutdown();
                 return Flow::Exit;
@@ -415,27 +488,74 @@ impl Controller {
                 tracing::error!(error = %e, "engine initialisation failed");
                 self.init_error = Some(e);
             }
-            WorkerMsg::Sample(s, cpu) => {
-                if state == EngineState::Running {
-                    self.status.memory_bytes = Some(s.memory_bytes);
-                    if cpu.is_some() {
-                        self.status.cpu_percent = cpu;
+            WorkerMsg::Sample { process, net } => {
+                if state != EngineState::Running {
+                    return; // e.g. a tick that raced with Stop
+                }
+                match process {
+                    Ok((s, cpu)) => {
+                        self.status.memory_bytes = Some(s.memory_bytes);
+                        if cpu.is_some() {
+                            self.status.cpu_percent = cpu;
+                        }
                     }
-                    self.emit(Event::Status(self.status.clone()));
+                    Err(e) => {
+                        tracing::warn!(error = %e, "process metrics sample failed");
+                        if !self.sample_error_reported {
+                            self.sample_error_reported = true;
+                            self.emit(Event::DiagnosticMessage {
+                                level: DiagLevel::Warning,
+                                message: format!("Process metrics could not be read: {e}"),
+                            });
+                        }
+                    }
                 }
-            }
-            WorkerMsg::SampleError(e) => {
-                tracing::warn!(error = %e, "process metrics sample failed");
-                if !self.sample_error_reported {
-                    self.sample_error_reported = true;
-                    self.emit(Event::DiagnosticMessage {
-                        level: DiagLevel::Warning,
-                        message: format!("Process metrics could not be read: {e}"),
-                    });
+                if let Some(n) = net {
+                    self.on_net(n);
                 }
+                self.emit_status();
             }
             WorkerMsg::Exited => self.on_worker_exited(),
         }
+    }
+
+    fn on_net(&mut self, n: NetUpdate) {
+        for c in n.changes {
+            let message = c.message();
+            tracing::info!(%message, "network adapter change");
+            self.emit(Event::DiagnosticMessage {
+                level: DiagLevel::Info,
+                message,
+            });
+        }
+        match n.status {
+            Ok(status) => {
+                if self.status.network_error.take().is_some() {
+                    tracing::info!("network monitor recovered");
+                }
+                self.net_error_reported = false;
+                self.status.network = Some(status);
+            }
+            Err(e) => {
+                // Keep the reason visible; do not show stale numbers.
+                self.status.network = None;
+                if !self.net_error_reported {
+                    self.net_error_reported = true;
+                    tracing::warn!(error = %e, "network monitoring unavailable");
+                    self.emit(Event::DiagnosticMessage {
+                        level: DiagLevel::Warning,
+                        message: format!("Network data unavailable: {e}"),
+                    });
+                }
+                self.status.network_error = Some(e);
+            }
+        }
+    }
+
+    fn emit_status(&mut self) {
+        self.status.state = Some(self.lc.state());
+        self.status.running_for = self.running_since.map(|t| t.elapsed());
+        self.emit(Event::Status(self.status.clone()));
     }
 
     fn on_worker_exited(&mut self) {
@@ -567,6 +687,8 @@ impl EngineHandle {
             gen: 0,
             init_error: None,
             sample_error_reported: false,
+            net_error_reported: false,
+            running_since: None,
             status: EngineStatus {
                 state: Some(EngineState::Stopped),
                 ..EngineStatus::default()

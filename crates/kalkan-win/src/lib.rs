@@ -5,6 +5,9 @@
 //! the platform-independent crates) the functions return conservative
 //! fallbacks so the rest of the workspace still compiles and tests.
 
+pub mod net;
+pub use net::WinNetworkMonitor;
+
 /// Whether the current process runs with an elevated (administrator) token.
 ///
 /// KALKAN does **not** require elevation for read-only monitoring. This is

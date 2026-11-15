@@ -17,9 +17,12 @@ pub mod lifecycle;
 pub mod link;
 pub mod protocol;
 
+/// Re-exported so front ends need no direct dependency on `kalkan-net`.
+pub use kalkan_net::{InterfaceKind, InterfaceStatus, NetworkStatus};
+
 pub use engine::{
-    live_engine_threads, EngineHandle, EngineSpec, ProbeFactory, ProcessProbe, ProcessSample,
-    ENGINE_NAME, ENGINE_SCOPE, ENGINE_TITLE,
+    live_engine_threads, EngineHandle, EngineSpec, NetworkFactory, ProbeFactory, ProcessProbe,
+    ProcessSample, ENGINE_NAME, ENGINE_SCOPE, ENGINE_TITLE,
 };
 pub use lifecycle::{EngineState, Lifecycle, Transition, TransitionError};
 pub use link::{EngineLink, Waker};

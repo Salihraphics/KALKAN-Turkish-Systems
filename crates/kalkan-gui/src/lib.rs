@@ -32,6 +32,9 @@ pub struct RunOptions {
     pub self_test: bool,
     /// During self-test, save a BMP screenshot of each step here.
     pub screenshot_dir: Option<PathBuf>,
+    /// Process CPU time source for the self-test's CPU measurement (the GUI
+    /// itself does not query the OS for metrics).
+    pub cpu_time: Option<fn() -> Option<std::time::Duration>>,
 }
 
 /// One self-test assertion.

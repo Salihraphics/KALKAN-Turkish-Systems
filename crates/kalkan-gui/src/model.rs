@@ -6,7 +6,7 @@
 //! when an [`EngineStatus`] from the engine contains the number. The GUI never
 //! invents data.
 
-use kalkan_core::{DiagLevel, EngineState, EngineStatus, Event};
+use kalkan_core::{DiagLevel, EngineState, EngineStatus, Event, InterfaceStatus, NetworkStatus};
 
 /// Navigation pages, in sidebar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,9 +61,9 @@ impl Page {
 /// Where a real value came from. Shown as a badge next to the value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    /// Measured by the running engine.
+    /// Measured by the running engine (process metrics, network monitor).
     Engine,
-    /// Queried from the operating system.
+    /// Queried from the operating system at start-up.
     System,
     /// Read from the configuration file.
     Config,
@@ -81,8 +81,14 @@ impl Source {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
-    Real { text: String, source: Source },
-    Unavailable { reason: &'static str },
+    Real {
+        text: String,
+        source: Source,
+    },
+    /// No real value exists; `reason` says why (shown to the user).
+    Unavailable {
+        reason: String,
+    },
 }
 
 impl Value {
@@ -90,6 +96,11 @@ impl Value {
         Value::Real {
             text: text.into(),
             source,
+        }
+    }
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Value::Unavailable {
+            reason: reason.into(),
         }
     }
     pub fn is_real(&self) -> bool {
@@ -111,26 +122,127 @@ impl Value {
     }
 }
 
+/// Line icons drawn by the GUI (no image resources).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Icon {
+    Dashboard,
+    Network,
+    Statistics,
+    Logs,
+    Settings,
+    Download,
+    Upload,
+    Cpu,
+    Memory,
+    Shield,
+    Interface,
+    Clock,
+    Peak,
+    Average,
+    File,
+}
+
+impl Page {
+    pub fn icon(self) -> Icon {
+        match self {
+            Page::Dashboard => Icon::Dashboard,
+            Page::Network => Icon::Network,
+            Page::Statistics => Icon::Statistics,
+            Page::Logs => Icon::Logs,
+            Page::Settings => Icon::Settings,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Card {
     pub title: &'static str,
+    pub icon: Icon,
     pub value: Value,
     /// Secondary line. For unavailable values this is the reason.
     pub detail: String,
 }
 
 impl Card {
-    fn new(title: &'static str, value: Value, detail: impl Into<String>) -> Self {
+    fn new(title: &'static str, icon: Icon, value: Value, detail: impl Into<String>) -> Self {
         let detail = match &value {
-            Value::Unavailable { reason } => (*reason).to_owned(),
+            Value::Unavailable { reason } => reason.clone(),
             Value::Real { .. } => detail.into(),
         };
         Card {
             title,
+            icon,
             value,
             detail,
         }
     }
+}
+
+/// One labelled value in a horizontal information strip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StripItem {
+    pub label: &'static str,
+    pub icon: Icon,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Series {
+    Download,
+    Upload,
+}
+
+/// A large live metric with a history graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tile {
+    pub title: &'static str,
+    pub icon: Icon,
+    pub series: Series,
+    pub value: Value,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Column {
+    pub title: &'static str,
+    /// Share of the spare width.
+    pub weight: u16,
+    /// Minimum width in DIP.
+    pub min_w: i32,
+    pub align: Align,
+    /// 0 = always shown; higher numbers are hidden first when space is short.
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowStatus {
+    None,
+    /// Connected and counted in totals.
+    Connected,
+    /// Up, but not counted (virtual adapter).
+    Virtual,
+    Disconnected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    pub cells: Vec<String>,
+    pub status: RowStatus,
+    pub muted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Table {
+    pub columns: Vec<Column>,
+    pub rows: Vec<Row>,
+    /// Shown instead of rows when there are none.
+    pub empty: Option<String>,
 }
 
 /// Static facts about this installation, gathered by the app at start-up.
@@ -153,6 +265,8 @@ pub struct AppInfo {
     pub log_note: String,
     /// Send Start as soon as the window exists (`general.start_engine_on_launch`).
     pub start_engine_on_launch: bool,
+    /// Engine sample interval (`monitor.sample_interval_ms`).
+    pub sample_interval_ms: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +291,61 @@ pub struct EventCounts {
     pub diagnostics: u32,
 }
 
+/// Number of samples kept for the traffic graphs (60 s at the default 1 s).
+pub const HISTORY_LEN: usize = 60;
+
+/// Fixed-size ring buffer of download/upload rates. No allocation after
+/// construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct History {
+    rx: [u64; HISTORY_LEN],
+    tx: [u64; HISTORY_LEN],
+    head: usize,
+    len: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        History {
+            rx: [0; HISTORY_LEN],
+            tx: [0; HISTORY_LEN],
+            head: 0,
+            len: 0,
+        }
+    }
+}
+
+impl History {
+    pub fn push(&mut self, rx: u64, tx: u64) {
+        self.rx[self.head] = rx;
+        self.tx[self.head] = tx;
+        self.head = (self.head + 1) % HISTORY_LEN;
+        self.len = (self.len + 1).min(HISTORY_LEN);
+    }
+    pub fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    /// Values of one series, oldest first.
+    pub fn iter(&self, series: Series) -> impl Iterator<Item = u64> + '_ {
+        let buf = match series {
+            Series::Download => &self.rx,
+            Series::Upload => &self.tx,
+        };
+        let start = (self.head + HISTORY_LEN - self.len) % HISTORY_LEN;
+        (0..self.len).map(move |i| buf[(start + i) % HISTORY_LEN])
+    }
+    pub fn max(&self, series: Series) -> u64 {
+        self.iter(series).max().unwrap_or(0)
+    }
+}
+
 /// Mutable UI state. Changes only on user input or engine events.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiState {
@@ -186,6 +355,8 @@ pub struct UiState {
     pub status: EngineStatus,
     pub notice: Option<Notice>,
     pub counts: EventCounts,
+    /// Download/upload rates of the current run, for the graphs.
+    pub history: History,
     /// The engine confirmed shutdown (last event it will ever send).
     pub shutdown_complete: bool,
 }
@@ -198,6 +369,7 @@ impl Default for UiState {
             status: EngineStatus::default(),
             notice: None,
             counts: EventCounts::default(),
+            history: History::default(),
             shutdown_complete: false,
         }
     }
@@ -218,15 +390,19 @@ impl UiState {
                 self.engine = to;
                 self.status.state = Some(to);
                 if to != EngineState::Running {
-                    // Metrics describe a running engine only.
+                    // Measurements describe a running engine only.
                     self.status.cpu_percent = None;
                     self.status.memory_bytes = None;
+                    self.status.network = None;
+                    self.status.network_error = None;
+                    self.status.running_for = None;
                 }
                 true
             }
             Event::EngineStarted => {
                 self.counts.started += 1;
                 self.notice = None;
+                self.history.clear();
                 true
             }
             Event::EngineStopped => {
@@ -255,6 +431,11 @@ impl UiState {
                 if let Some(st) = s.state {
                     self.engine = st;
                 }
+                if let Some(n) = &s.network {
+                    if let (Some(rx), Some(tx)) = (n.rx_rate, n.tx_rate) {
+                        self.history.push(rx, tx);
+                    }
+                }
                 let changed = self.status != s;
                 self.status = s;
                 changed
@@ -277,188 +458,340 @@ impl UiState {
 /// Everything a page draws, besides the title.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PageView {
-    /// Dashboard only: engine state panel with Start/Stop.
+    /// Dashboard only: engine panel with identity, state and Start/Stop.
     pub engine_panel: bool,
+    pub tiles: Vec<Tile>,
     pub cards: Vec<Card>,
-    /// Key/value table (Settings).
-    pub table: Vec<(String, String)>,
+    pub strip: Vec<StripItem>,
+    pub table: Option<Table>,
     /// Explanatory paragraph at the bottom.
-    pub note: Option<&'static str>,
+    pub note: Option<String>,
 }
 
 const NEEDS_RUNNING: &str = "Measured while the engine is running";
 const FIRST_SAMPLE: &str = "Waiting for the first sample";
-const PHASE4_MONITOR: &str = "Requires the network monitor (Phase 4)";
-const PHASE5_LOGS: &str = "In-app log view arrives in Phase 5";
+const NET_NEEDS_RUNNING: &str = "Start the engine to monitor network activity";
+const NET_FIRST_SAMPLES: &str = "Waiting for two samples to compute a rate";
 
 pub fn privilege_value(elevated: Option<bool>) -> Value {
     match elevated {
         Some(true) => Value::real("Administrator", Source::System),
         Some(false) => Value::real("Standard user", Source::System),
-        None => Value::Unavailable {
-            reason: "Privilege query failed",
-        },
+        None => Value::unavailable("Privilege query failed"),
+    }
+}
+
+/// Why network numbers are missing right now.
+fn net_reason(ui: &UiState) -> String {
+    if ui.engine != EngineState::Running {
+        return NET_NEEDS_RUNNING.into();
+    }
+    match (&ui.status.network, &ui.status.network_error) {
+        (_, Some(e)) => format!("Network monitor unavailable: {e}"),
+        (Some(_), None) => NET_FIRST_SAMPLES.into(),
+        (None, None) => FIRST_SAMPLE.into(),
+    }
+}
+
+fn rate_value(ui: &UiState, rate: impl Fn(&NetworkStatus) -> Option<u64>) -> Value {
+    match ui.status.network.as_ref().and_then(&rate) {
+        Some(r) => Value::real(format_rate(r), Source::Engine),
+        None => Value::unavailable(net_reason(ui)),
+    }
+}
+
+fn net_value(ui: &UiState, f: impl Fn(&NetworkStatus) -> String) -> Value {
+    match &ui.status.network {
+        Some(n) => Value::real(f(n), Source::Engine),
+        None => Value::unavailable(net_reason(ui)),
+    }
+}
+
+fn metric_reason(ui: &UiState) -> &'static str {
+    if ui.engine == EngineState::Running {
+        FIRST_SAMPLE
+    } else {
+        NEEDS_RUNNING
+    }
+}
+
+fn interface_summary(i: &InterfaceStatus) -> String {
+    match i.link_speed_bps {
+        Some(s) => format!("{} · {}", i.name, format_link_speed(s)),
+        None => i.name.clone(),
+    }
+}
+
+fn interfaces_table(ui: &UiState) -> Table {
+    let col = |title, weight, min_w, align, priority| Column {
+        title,
+        weight,
+        min_w,
+        align,
+        priority,
+    };
+    let columns = vec![
+        col("Interface", 4, 120, Align::Left, 0),
+        col("Type", 2, 64, Align::Left, 3),
+        col("Link", 2, 72, Align::Right, 4),
+        col("Download", 2, 80, Align::Right, 0),
+        col("Upload", 2, 80, Align::Right, 0),
+        col("Received", 2, 80, Align::Right, 1),
+        col("Sent", 2, 80, Align::Right, 2),
+    ];
+    let (rows, empty) = match &ui.status.network {
+        Some(n) if n.interfaces.is_empty() => {
+            (Vec::new(), Some("No network interfaces were found.".into()))
+        }
+        Some(n) => {
+            let rate = |r: Option<u64>| r.map_or("…".to_owned(), format_rate);
+            let rows = n
+                .interfaces
+                .iter()
+                .map(|i| Row {
+                    cells: vec![
+                        i.name.clone(),
+                        i.kind.label().to_owned(),
+                        i.link_speed_bps.map_or("–".to_owned(), format_link_speed),
+                        rate(i.rx_rate),
+                        rate(i.tx_rate),
+                        format_bytes(i.rx_bytes),
+                        format_bytes(i.tx_bytes),
+                    ],
+                    status: match (i.connected, i.counted) {
+                        (true, true) => RowStatus::Connected,
+                        (true, false) => RowStatus::Virtual,
+                        (false, _) => RowStatus::Disconnected,
+                    },
+                    muted: !i.counted,
+                })
+                .collect();
+            (rows, None)
+        }
+        None => (Vec::new(), Some(net_reason(ui))),
+    };
+    Table {
+        columns,
+        rows,
+        empty,
     }
 }
 
 pub fn page_view(page: Page, ui: &UiState, info: &AppInfo) -> PageView {
     let s = &ui.status;
-    let metric_reason = if ui.engine == EngineState::Running {
-        FIRST_SAMPLE
-    } else {
-        NEEDS_RUNNING
-    };
+    let net = s.network.as_ref();
     match page {
         Page::Dashboard => PageView {
             engine_panel: true,
             cards: vec![
                 Card::new(
-                    "CPU usage",
-                    s.cpu_percent.map_or(
-                        Value::Unavailable {
-                            reason: metric_reason,
-                        },
-                        |p| Value::real(format!("{p:.1} %"), Source::Engine),
+                    "Download",
+                    Icon::Download,
+                    rate_value(ui, |n| n.rx_rate),
+                    format!(
+                        "{} received this session",
+                        format_bytes(net.map_or(0, |n| n.session_rx_bytes))
                     ),
+                ),
+                Card::new(
+                    "Upload",
+                    Icon::Upload,
+                    rate_value(ui, |n| n.tx_rate),
+                    format!(
+                        "{} sent this session",
+                        format_bytes(net.map_or(0, |n| n.session_tx_bytes))
+                    ),
+                ),
+                Card::new(
+                    "CPU usage",
+                    Icon::Cpu,
+                    s.cpu_percent
+                        .map_or(Value::unavailable(metric_reason(ui)), |p| {
+                            Value::real(format!("{p:.1} %"), Source::Engine)
+                        }),
                     "KALKAN process, one core = 100 %",
                 ),
                 Card::new(
                     "Memory usage",
-                    s.memory_bytes.map_or(
-                        Value::Unavailable {
-                            reason: metric_reason,
-                        },
-                        |b| Value::real(format_bytes(b), Source::Engine),
-                    ),
+                    Icon::Memory,
+                    s.memory_bytes
+                        .map_or(Value::unavailable(metric_reason(ui)), |b| {
+                            Value::real(format_bytes(b), Source::Engine)
+                        }),
                     "KALKAN process working set",
                 ),
-                Card::new(
-                    "Network activity",
-                    rx_tx(s),
-                    "Receive / send, all interfaces",
-                ),
-                Card::new(
-                    "Privileges",
-                    privilege_value(info.elevated),
-                    "Not required for monitoring",
-                ),
             ],
-            table: vec![],
-            note: None,
+            strip: vec![
+                StripItem {
+                    label: "Active interface",
+                    icon: Icon::Interface,
+                    value: match net {
+                        Some(n) => match n.primary() {
+                            Some(i) => Value::real(interface_summary(i), Source::Engine),
+                            None => Value::unavailable("No connected network adapter"),
+                        },
+                        None => Value::unavailable(net_reason(ui)),
+                    },
+                },
+                StripItem {
+                    label: "Interfaces",
+                    icon: Icon::Network,
+                    value: net_value(ui, |n| {
+                        format!(
+                            "{} connected of {}",
+                            n.connected_count(),
+                            n.interfaces.len()
+                        )
+                    }),
+                },
+                StripItem {
+                    label: "Privileges",
+                    icon: Icon::Shield,
+                    value: privilege_value(info.elevated),
+                },
+            ],
+            ..PageView::default()
         },
         Page::Network => PageView {
-            cards: vec![
-                Card::new(
-                    "Receive rate",
-                    s.rx_bytes_per_sec.map_or(
-                        Value::Unavailable {
-                            reason: PHASE4_MONITOR,
-                        },
-                        |r| Value::real(format_rate(r), Source::Engine),
-                    ),
-                    "All interfaces",
-                ),
-                Card::new(
-                    "Send rate",
-                    s.tx_bytes_per_sec.map_or(
-                        Value::Unavailable {
-                            reason: PHASE4_MONITOR,
-                        },
-                        |r| Value::real(format_rate(r), Source::Engine),
-                    ),
-                    "All interfaces",
-                ),
-                Card::new(
-                    "Interfaces",
-                    Value::Unavailable {
-                        reason: PHASE4_MONITOR,
-                    },
-                    "",
-                ),
+            tiles: vec![
+                Tile {
+                    title: "Download",
+                    icon: Icon::Download,
+                    series: Series::Download,
+                    value: rate_value(ui, |n| n.rx_rate),
+                    detail: net.map_or(net_reason(ui), |n| {
+                        format!("Peak {}", format_rate(n.peak_rx_rate))
+                    }),
+                },
+                Tile {
+                    title: "Upload",
+                    icon: Icon::Upload,
+                    series: Series::Upload,
+                    value: rate_value(ui, |n| n.tx_rate),
+                    detail: net.map_or(net_reason(ui), |n| {
+                        format!("Peak {}", format_rate(n.peak_tx_rate))
+                    }),
+                },
             ],
+            table: Some(interfaces_table(ui)),
             note: Some(
-                "Monitoring is read-only. KALKAN reads the interface counters that Windows \
-                 already keeps. It never modifies, blocks or injects traffic.",
+                "Read-only: KALKAN reads the counters Windows already keeps and never captures, \
+                 blocks or modifies traffic. Totals count connected hardware adapters only; VPN \
+                 and virtual adapters are listed but not counted, to avoid double counting."
+                    .into(),
             ),
             ..PageView::default()
         },
         Page::Statistics => PageView {
             cards: vec![
                 Card::new(
-                    "Session received",
-                    Value::Unavailable {
-                        reason: PHASE4_MONITOR,
-                    },
-                    "",
+                    "Received",
+                    Icon::Download,
+                    net_value(ui, |n| format_bytes(n.session_rx_bytes)),
+                    "Since the engine started",
                 ),
                 Card::new(
-                    "Session sent",
-                    Value::Unavailable {
-                        reason: PHASE4_MONITOR,
-                    },
-                    "",
+                    "Sent",
+                    Icon::Upload,
+                    net_value(ui, |n| format_bytes(n.session_tx_bytes)),
+                    "Since the engine started",
                 ),
                 Card::new(
-                    "Peak receive rate",
-                    Value::Unavailable {
-                        reason: PHASE4_MONITOR,
-                    },
-                    "",
+                    "Peak download",
+                    Icon::Peak,
+                    net_value(ui, |n| format_rate(n.peak_rx_rate)),
+                    "Highest one-interval rate",
                 ),
                 Card::new(
-                    "Peak send rate",
-                    Value::Unavailable {
-                        reason: PHASE4_MONITOR,
-                    },
-                    "",
+                    "Peak upload",
+                    Icon::Peak,
+                    net_value(ui, |n| format_rate(n.peak_tx_rate)),
+                    "Highest one-interval rate",
+                ),
+                Card::new(
+                    "Average download",
+                    Icon::Average,
+                    net.and_then(|n| n.average_rates())
+                        .map_or(Value::unavailable(net_reason(ui)), |(rx, _)| {
+                            Value::real(format_rate(rx), Source::Engine)
+                        }),
+                    "Session total / session time",
+                ),
+                Card::new(
+                    "Average upload",
+                    Icon::Average,
+                    net.and_then(|n| n.average_rates())
+                        .map_or(Value::unavailable(net_reason(ui)), |(_, tx)| {
+                            Value::real(format_rate(tx), Source::Engine)
+                        }),
+                    "Session total / session time",
                 ),
             ],
-            note: Some(
-                "Statistics are computed only from real monitor samples. Nothing is shown \
-                 until the network monitor exists.",
-            ),
+            strip: vec![
+                StripItem {
+                    label: "Engine running for",
+                    icon: Icon::Clock,
+                    value: s
+                        .running_for
+                        .map_or(Value::unavailable(NEEDS_RUNNING), |d| {
+                            Value::real(format_duration(d), Source::Engine)
+                        }),
+                },
+                StripItem {
+                    label: "Samples",
+                    icon: Icon::Statistics,
+                    value: net_value(ui, |n| n.samples.to_string()),
+                },
+                StripItem {
+                    label: "Sample interval",
+                    icon: Icon::Clock,
+                    value: Value::real(format!("{} ms", info.sample_interval_ms), Source::Config),
+                },
+            ],
             ..PageView::default()
         },
         Page::Logs => PageView {
             cards: vec![
                 Card::new(
                     "Log level",
+                    Icon::Logs,
                     Value::real(info.log_level.clone(), Source::Config),
                     "logging.level in kalkan.toml",
-                ),
-                Card::new(
-                    "Log viewer",
-                    Value::Unavailable {
-                        reason: PHASE5_LOGS,
-                    },
-                    "",
                 ),
                 match &info.log_file {
                     Some(path) => Card::new(
                         "Log file",
+                        Icon::File,
                         Value::real(path.clone(), Source::System),
                         info.log_note.clone(),
                     ),
                     // Keep the specific reason (e.g. disabled in the config).
                     None => Card {
                         title: "Log file",
-                        value: Value::Unavailable {
-                            reason: "No log file in use",
-                        },
+                        icon: Icon::File,
+                        value: Value::unavailable("No log file in use"),
                         detail: info.log_note.clone(),
                     },
                 },
+                Card::new(
+                    "Log viewer",
+                    Icon::Statistics,
+                    Value::unavailable("In-app log view arrives in Phase 5"),
+                    "",
+                ),
             ],
             note: Some(
-                "The log file is a plain-text file that you can open in any editor. At start-up \
-                 a file over 5 MB is renamed to kalkan.log.old. Daily rotation and an in-app \
-                 viewer arrive in Phase 5.",
+                "The log file is plain text and can be opened in any editor. At start-up a file \
+                 over 5 MB is renamed to kalkan.log.old. Daily rotation and an in-app viewer \
+                 arrive in Phase 5."
+                    .into(),
             ),
             ..PageView::default()
         },
         Page::Settings => PageView {
             cards: vec![Card::new(
                 "Configuration file",
+                Icon::Settings,
                 Value::real(
                     if info.config_file_exists {
                         "Loaded"
@@ -469,25 +802,68 @@ pub fn page_view(page: Page, ui: &UiState, info: &AppInfo) -> PageView {
                 ),
                 info.config_path.clone(),
             )],
-            table: info.settings.clone(),
+            table: Some(Table {
+                columns: vec![
+                    Column {
+                        title: "Setting",
+                        weight: 3,
+                        min_w: 160,
+                        align: Align::Left,
+                        priority: 0,
+                    },
+                    Column {
+                        title: "Value",
+                        weight: 2,
+                        min_w: 100,
+                        align: Align::Right,
+                        priority: 0,
+                    },
+                ],
+                rows: info
+                    .settings
+                    .iter()
+                    .map(|(k, v)| Row {
+                        cells: vec![k.clone(), v.clone()],
+                        status: RowStatus::None,
+                        muted: false,
+                    })
+                    .collect(),
+                empty: None,
+            }),
             note: Some(
                 "Settings are read-only in this version. Edit kalkan.toml and restart KALKAN. \
-                 Editing in the app arrives in Phase 5.",
+                 Editing in the app arrives in Phase 5."
+                    .into(),
             ),
             ..PageView::default()
         },
     }
 }
 
-fn rx_tx(s: &EngineStatus) -> Value {
-    match (s.rx_bytes_per_sec, s.tx_bytes_per_sec) {
-        (Some(rx), Some(tx)) => Value::real(
-            format!("↓ {}  ↑ {}", format_rate(rx), format_rate(tx)),
-            Source::Engine,
-        ),
-        _ => Value::Unavailable {
-            reason: PHASE4_MONITOR,
-        },
+/// `1:02:03` or `02:03`.
+pub fn format_duration(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    let (h, m, sec) = (s / 3600, (s % 3600) / 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{sec:02}")
+    } else {
+        format!("{m:02}:{sec:02}")
+    }
+}
+
+/// Link speed in decimal units, as Windows shows it (`1 Gbps`, `866.7 Mbps`).
+pub fn format_link_speed(bps: u64) -> String {
+    let trim = |v: f64| {
+        if (v - v.round()).abs() < 0.05 {
+            format!("{v:.0}")
+        } else {
+            format!("{v:.1}")
+        }
+    };
+    match bps {
+        b if b >= 1_000_000_000 => format!("{} Gbps", trim(b as f64 / 1e9)),
+        b if b >= 1_000_000 => format!("{} Mbps", trim(b as f64 / 1e6)),
+        b => format!("{} kbps", trim(b as f64 / 1e3)),
     }
 }
 
@@ -512,232 +888,5 @@ pub fn format_rate(bps: u64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn info() -> AppInfo {
-        AppInfo {
-            log_level: "info".into(),
-            elevated: Some(false),
-            ..AppInfo::default()
-        }
-    }
-
-    #[test]
-    fn page_index_round_trip() {
-        for p in Page::ALL {
-            assert_eq!(Page::from_index(p.index()), Some(p));
-        }
-        assert_eq!(Page::from_index(5), None);
-    }
-
-    #[test]
-    fn page_labels_match_spec() {
-        let labels: Vec<_> = Page::ALL.iter().map(|p| p.label()).collect();
-        assert_eq!(
-            labels,
-            [
-                "Dashboard",
-                "Network Monitoring",
-                "Statistics",
-                "Logs",
-                "Settings"
-            ]
-        );
-    }
-
-    #[test]
-    fn no_engine_data_means_no_real_metrics_anywhere() {
-        let ui = UiState::default();
-        for p in Page::ALL {
-            for c in page_view(p, &ui, &info()).cards {
-                if let Value::Real { source, .. } = &c.value {
-                    assert_ne!(
-                        *source,
-                        Source::Engine,
-                        "{p:?}/{} claims live data",
-                        c.title
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn metrics_become_real_only_when_engine_reports_them() {
-        let mut ui = UiState::default();
-        ui.apply(Event::Status(EngineStatus {
-            state: Some(EngineState::Running),
-            cpu_percent: Some(1.3),
-            memory_bytes: Some(5 * 1024 * 1024),
-            rx_bytes_per_sec: Some(2048),
-            tx_bytes_per_sec: None,
-        }));
-        assert_eq!(ui.engine, EngineState::Running);
-        let v = page_view(Page::Dashboard, &ui, &info());
-        assert_eq!(v.cards[0].value, Value::real("1.3 %", Source::Engine));
-        assert_eq!(v.cards[1].value, Value::real("5.0 MB", Source::Engine));
-        // rx without tx: the combined card must not show a half-real value.
-        assert!(!v.cards[2].value.is_real());
-        let n = page_view(Page::Network, &ui, &info());
-        assert!(n.cards[0].value.is_real());
-        assert!(!n.cards[1].value.is_real());
-    }
-
-    #[test]
-    fn unavailable_cards_explain_why() {
-        let mut ui = UiState::default();
-        let v = page_view(Page::Dashboard, &ui, &info());
-        assert_eq!(v.cards[0].detail, NEEDS_RUNNING);
-        assert_eq!(v.cards[0].value.badge(), "NOT AVAILABLE");
-        ui.apply(Event::StateChanged {
-            from: EngineState::Starting,
-            to: EngineState::Running,
-        });
-        let v = page_view(Page::Dashboard, &ui, &info());
-        assert_eq!(v.cards[0].detail, FIRST_SAMPLE);
-    }
-
-    #[test]
-    fn metrics_are_cleared_when_the_engine_leaves_running() {
-        let mut ui = UiState::default();
-        ui.apply(Event::Status(EngineStatus {
-            state: Some(EngineState::Running),
-            cpu_percent: Some(2.0),
-            memory_bytes: Some(1 << 20),
-            ..EngineStatus::default()
-        }));
-        assert!(page_view(Page::Dashboard, &ui, &info()).cards[1]
-            .value
-            .is_real());
-        for to in [EngineState::Stopping, EngineState::Failed] {
-            let mut u = ui.clone();
-            u.apply(Event::StateChanged {
-                from: EngineState::Running,
-                to,
-            });
-            let v = page_view(Page::Dashboard, &u, &info());
-            assert!(
-                !v.cards[0].value.is_real() && !v.cards[1].value.is_real(),
-                "{to}"
-            );
-        }
-    }
-
-    #[test]
-    fn log_file_card_shows_path_or_reason() {
-        let mut i = info();
-        i.log_file = Some("C:\\logs\\kalkan.log".into());
-        let v = page_view(Page::Logs, &UiState::default(), &i);
-        let card = v.cards.iter().find(|c| c.title == "Log file").unwrap();
-        assert_eq!(
-            card.value,
-            Value::real("C:\\logs\\kalkan.log", Source::System)
-        );
-        i.log_file = None;
-        i.log_note = "Disabled by logging.file_logging".into();
-        let v = page_view(Page::Logs, &UiState::default(), &i);
-        let card = v.cards.iter().find(|c| c.title == "Log file").unwrap();
-        assert!(!card.value.is_real());
-        assert_eq!(card.detail, "Disabled by logging.file_logging");
-    }
-
-    #[test]
-    fn privileges_are_system_data() {
-        assert_eq!(
-            privilege_value(Some(true)),
-            Value::real("Administrator", Source::System)
-        );
-        assert!(!privilege_value(None).is_real());
-    }
-
-    #[test]
-    fn events_update_state_notices_and_counts() {
-        let mut ui = UiState::default();
-        assert!(ui.apply(Event::DiagnosticMessage {
-            level: DiagLevel::Warning,
-            message: "Start ignored".into()
-        }));
-        assert_eq!(ui.notice.as_ref().unwrap().kind, NoticeKind::Warning);
-        assert!(ui.apply(Event::EngineError {
-            message: "bad".into()
-        }));
-        assert_eq!(ui.notice.as_ref().unwrap().kind, NoticeKind::Error);
-        assert!(ui.apply(Event::StateChanged {
-            from: EngineState::Stopped,
-            to: EngineState::Starting
-        }));
-        assert!(ui.can_stop() && !ui.can_start(), "Stop cancels a start");
-        assert!(ui.apply(Event::EngineStarted));
-        assert!(ui.notice.is_none(), "a successful start clears old notices");
-        ui.apply(Event::EngineStopped);
-        assert_eq!(
-            ui.counts,
-            EventCounts {
-                started: 1,
-                stopped: 1,
-                errors: 1,
-                diagnostics: 1
-            }
-        );
-        assert!(!ui.shutdown_complete);
-        assert!(!ui.apply(Event::ShutdownComplete));
-        assert!(ui.shutdown_complete);
-    }
-
-    #[test]
-    fn button_affordances_follow_engine_state() {
-        let mut ui = UiState::default();
-        for (to, start, stop) in [
-            (EngineState::Starting, false, true),
-            (EngineState::Running, false, true),
-            (EngineState::Stopping, false, false),
-            (EngineState::Stopped, true, false),
-            (EngineState::Failed, true, false),
-        ] {
-            ui.apply(Event::StateChanged {
-                from: ui.engine,
-                to,
-            });
-            assert_eq!((ui.can_start(), ui.can_stop()), (start, stop), "{to}");
-        }
-    }
-
-    #[test]
-    fn navigate_reports_change() {
-        let mut ui = UiState::default();
-        assert!(!ui.navigate(Page::Dashboard));
-        assert!(ui.navigate(Page::Logs));
-        assert_eq!(ui.page, Page::Logs);
-    }
-
-    #[test]
-    fn only_dashboard_has_engine_panel() {
-        for p in Page::ALL {
-            assert_eq!(
-                page_view(p, &UiState::default(), &info()).engine_panel,
-                p == Page::Dashboard
-            );
-        }
-    }
-
-    #[test]
-    fn settings_page_shows_config_rows() {
-        let mut i = info();
-        i.settings = vec![("Log level".into(), "info".into())];
-        i.config_path = "C:\\x\\kalkan.toml".into();
-        let v = page_view(Page::Settings, &UiState::default(), &i);
-        assert_eq!(v.table, i.settings);
-        assert_eq!(v.cards[0].detail, "C:\\x\\kalkan.toml");
-    }
-
-    #[test]
-    fn byte_formatting() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(1023), "1023 B");
-        assert_eq!(format_bytes(1024), "1.0 KB");
-        assert_eq!(format_bytes(1536 * 1024), "1.5 MB");
-        assert_eq!(format_rate(2048), "2.0 KB/s");
-        assert!(format_bytes(u64::MAX).ends_with("TB"));
-    }
-}
+#[path = "model_tests.rs"]
+mod tests;

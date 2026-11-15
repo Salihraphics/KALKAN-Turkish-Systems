@@ -5,6 +5,7 @@
 //! thread (the engine controller), so they arrive in a deterministic order.
 
 use crate::lifecycle::EngineState;
+pub use kalkan_net::NetworkStatus;
 
 /// Requests from the GUI (or any other front end) to the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,10 +31,12 @@ pub struct EngineStatus {
     pub cpu_percent: Option<f32>,
     /// KALKAN process working set in bytes.
     pub memory_bytes: Option<u64>,
-    /// Aggregate receive rate in bytes/second (network monitor, Phase 4).
-    pub rx_bytes_per_sec: Option<u64>,
-    /// Aggregate send rate in bytes/second (network monitor, Phase 4).
-    pub tx_bytes_per_sec: Option<u64>,
+    /// Read-only network interface data from the monitor.
+    pub network: Option<NetworkStatus>,
+    /// Why `network` is `None` while Running (monitor failed or missing).
+    pub network_error: Option<String>,
+    /// How long the engine has been Running (measured by the engine).
+    pub running_for: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

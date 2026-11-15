@@ -52,9 +52,44 @@ jobs:
           Invoke-Kalkan 1 @('--config', 'bad.toml', '--check-config')
           Invoke-Kalkan 2 @('--no-such-flag')
           Invoke-Kalkan 2 @('--screenshots', 'x')
+      - name: Real network counters (interfaces, 5 MB download check)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Get-Counters {
+            $out = & ./target/release/kalkan.exe --interfaces | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "kalkan --interfaces failed" }
+            Write-Host $out
+            [pscustomobject]@{
+              Rx = [uint64]([regex]::Match($out, 'TOTAL_RX=(\d+)').Groups[1].Value)
+              Counted = [int]([regex]::Match($out, 'COUNTED=(\d+)').Groups[1].Value)
+            }
+          }
+          $before = Get-Counters
+          if ($before.Counted -lt 1) { throw "no counted (connected hardware) interface found" }
+          $bytes = 5000000
+          try {
+            Invoke-WebRequest -Uri "https://speed.cloudflare.com/__down?bytes=$bytes" -OutFile dl.bin -TimeoutSec 60
+          } catch {
+            Write-Host "::warning::download for the counter check failed ($_); skipping the delta assertion"
+            exit 0
+          }
+          $got = (Get-Item dl.bin).Length
+          $after = Get-Counters
+          $delta = $after.Rx - $before.Rx
+          Write-Host "downloaded $got bytes; counted receive bytes grew by $delta"
+          if ($delta -lt $got) { throw "receive counters grew by $delta bytes, less than the $got bytes downloaded" }
+      - name: Benchmark (monitoring overhead)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Start-Process -FilePath ./target/release/kalkan.exe -ArgumentList @('--config', 'missing.toml', '--benchmark') `
+               -Wait -PassThru -NoNewWindow -RedirectStandardOutput benchmark.txt -RedirectStandardError benchmark-err.txt
+          Get-Content benchmark.txt, benchmark-err.txt
+          if ($p.ExitCode -ne 0) { throw "benchmark failed with exit code $($p.ExitCode)" }
       - name: GUI self-test (real window, scripted clicks, screenshots)
         shell: pwsh
-        timeout-minutes: 5
+        timeout-minutes: 6
         run: |
           $ErrorActionPreference = 'Stop'
           $p = Start-Process -FilePath ./target/release/kalkan.exe `
@@ -80,6 +115,7 @@ jobs:
             screenshots/
             selftest.txt
             selftest-err.txt
+            benchmark.txt
       - uses: actions/upload-artifact@v5
         with:
           name: kalkan-windows-x64

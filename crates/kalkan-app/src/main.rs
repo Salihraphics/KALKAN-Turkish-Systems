@@ -16,6 +16,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod netcli;
+
 use kalkan_config::{AppDirs, Config};
 use kalkan_gui::{AppInfo, RunOptions};
 use kalkan_logging::Output;
@@ -32,6 +34,8 @@ OPTIONS:
     --config <PATH>          Use this configuration file instead of the default
     --check-config           Validate the configuration file and exit
     --print-default-config   Print the default configuration as TOML and exit
+    --interfaces             List network interfaces and their counters, then exit
+    --benchmark              Measure monitoring overhead (about 25 s), then exit
     --self-test              Open the window, run the scripted UI self-test, exit
     --screenshots <DIR>      With --self-test: save a BMP of each step to DIR
     -V, --version            Print version and exit
@@ -43,6 +47,8 @@ struct Args {
     config: Option<PathBuf>,
     check_config: bool,
     print_default_config: bool,
+    interfaces: bool,
+    benchmark: bool,
     self_test: bool,
     screenshots: Option<PathBuf>,
     version: bool,
@@ -54,6 +60,8 @@ impl Args {
     fn is_console_run(&self) -> bool {
         self.check_config
             || self.print_default_config
+            || self.interfaces
+            || self.benchmark
             || self.self_test
             || self.version
             || self.help
@@ -70,6 +78,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--check-config" => a.check_config = true,
             "--print-default-config" => a.print_default_config = true,
             "--self-test" => a.self_test = true,
+            "--interfaces" => a.interfaces = true,
+            "--benchmark" => a.benchmark = true,
             "--screenshots" => {
                 a.screenshots = Some(PathBuf::from(
                     it.next().ok_or("--screenshots requires a directory")?,
@@ -108,6 +118,9 @@ fn main() -> ExitCode {
         println!("kalkan {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
+    if args.interfaces {
+        return netcli::print_interfaces();
+    }
     if args.print_default_config {
         return match Config::default().to_toml_string() {
             Ok(s) => {
@@ -139,6 +152,9 @@ fn main() -> ExitCode {
         println!("{}: OK", config_path.display());
         return ExitCode::SUCCESS;
     }
+    if args.benchmark {
+        return netcli::run_benchmark(&config, engine_spec(&config));
+    }
 
     let log = init_logging(&args, &config);
     kalkan_logging::install_panic_hook();
@@ -153,6 +169,7 @@ fn main() -> ExitCode {
         start_minimized: config.ui.start_minimized,
         self_test: args.self_test,
         screenshot_dir: args.screenshots.clone(),
+        cpu_time: Some(kalkan_win::process_cpu_time),
     };
     let engine = match kalkan_core::EngineHandle::spawn(engine_spec(&config)) {
         Ok(h) => Box::new(h),
@@ -254,6 +271,14 @@ fn engine_spec(config: &Config) -> kalkan_core::EngineSpec {
     kalkan_core::EngineSpec {
         sample_interval: Duration::from_millis(config.monitor.sample_interval_ms.into()),
         probe: Arc::new(|| Ok(Box::new(WinProcessProbe) as Box<dyn kalkan_core::ProcessProbe>)),
+        network: Some(Arc::new(|| {
+            if cfg!(windows) {
+                Ok(Box::new(kalkan_win::WinNetworkMonitor::new())
+                    as Box<dyn kalkan_net::NetworkMonitor>)
+            } else {
+                Err("network monitoring is only implemented for Windows".into())
+            }
+        })),
     }
 }
 
@@ -289,6 +314,7 @@ fn app_info(config: &Config, config_path: &Path, log: &LogChoice) -> AppInfo {
         },
         log_note: log.note.clone(),
         start_engine_on_launch: config.general.start_engine_on_launch,
+        sample_interval_ms: config.monitor.sample_interval_ms,
     }
 }
 
@@ -352,6 +378,8 @@ mod tests {
     #[test]
     fn cli_flags_are_console_runs() {
         for f in [
+            "--interfaces",
+            "--benchmark",
             "--check-config",
             "--print-default-config",
             "--self-test",

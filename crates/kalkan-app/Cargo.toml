@@ -16,6 +16,7 @@ path = "src/main.rs"
 kalkan-core.workspace = true
 kalkan-config.workspace = true
 kalkan-logging.workspace = true
+kalkan-net.workspace = true
 kalkan-win.workspace = true
 kalkan-gui.workspace = true
 tracing.workspace = true
