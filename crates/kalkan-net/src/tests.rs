@@ -14,6 +14,7 @@ fn iface(id: u64, name: &str, kind: InterfaceKind, rx: u64, tx: u64) -> Interfac
         kind,
         connected: true,
         hardware: true,
+        mac: Some(id * 0x1000),
         rx_bytes: rx,
         tx_bytes: tx,
         link_speed_bps: Some(1_000_000_000),
@@ -233,4 +234,76 @@ fn null_monitor_reports_nothing() {
     m.sample(&mut snap).unwrap();
     assert!(snap.interfaces.is_empty());
     let _boxed: Box<dyn NetworkMonitor> = Box::new(NullMonitor);
+}
+
+#[test]
+fn same_mac_pair_is_counted_once() {
+    // Azure Accelerated Networking: synthetic NIC + SR-IOV VF, same MAC,
+    // both report the same traffic (observed on the CI runner: a 5 MB
+    // download grew the summed counters by 10 MB before this rule).
+    let mut sim = Sim::new();
+    let synthetic = |rx| InterfaceSample {
+        mac: Some(0x00_15_5D_01_02_03),
+        ..iface(20, "Ethernet 3", InterfaceKind::Ethernet, rx, 0)
+    };
+    let vf = |rx| InterfaceSample {
+        mac: Some(0x00_15_5D_01_02_03),
+        ..iface(30, "Ethernet 4", InterfaceKind::Ethernet, rx, 0)
+    };
+    sim.step(vec![synthetic(0), vf(0)]);
+    let (s, _) = sim.step(vec![synthetic(5_000), vf(5_100)]);
+    assert_eq!(s.rx_rate, Some(5_000), "counted once, by the lower id");
+    assert_eq!(s.session_rx_bytes, 5_000);
+    let dup = find(&s, "Ethernet 4");
+    assert!(!dup.counted && dup.connected);
+    assert_eq!(dup.duplicate_of.as_deref(), Some("Ethernet 3"));
+    assert_eq!(dup.rx_rate, Some(5_100), "still shown with its own rate");
+    assert!(find(&s, "Ethernet 3").counted);
+    // The choice is stable even when the duplicate has the larger counters.
+    let (s, _) = sim.step(vec![synthetic(6_000), vf(9_000)]);
+    assert!(find(&s, "Ethernet 3").counted && !find(&s, "Ethernet 4").counted);
+}
+
+#[test]
+fn different_macs_are_both_counted_and_missing_macs_never_merge() {
+    let mut sim = Sim::new();
+    let no_mac = |id, name: &str, rx| InterfaceSample {
+        mac: None,
+        ..iface(id, name, InterfaceKind::Other, rx, 0)
+    };
+    sim.step(vec![
+        eth(0, 0),
+        wifi(0, 0),
+        no_mac(7, "A", 0),
+        no_mac(8, "B", 0),
+    ]);
+    let (s, _) = sim.step(vec![
+        eth(100, 0),
+        wifi(200, 0),
+        no_mac(7, "A", 10),
+        no_mac(8, "B", 20),
+    ]);
+    assert_eq!(s.rx_rate, Some(330));
+    assert!(s
+        .interfaces
+        .iter()
+        .all(|i| i.counted && i.duplicate_of.is_none()));
+}
+
+#[test]
+fn disconnected_twin_does_not_steal_counting() {
+    let mut sim = Sim::new();
+    let a = |rx, connected| InterfaceSample {
+        mac: Some(42),
+        connected,
+        ..iface(1, "A", InterfaceKind::Ethernet, rx, 0)
+    };
+    let b = |rx| InterfaceSample {
+        mac: Some(42),
+        ..iface(2, "B", InterfaceKind::Ethernet, rx, 0)
+    };
+    sim.step(vec![a(0, false), b(0)]);
+    let (s, _) = sim.step(vec![a(0, false), b(700)]);
+    assert_eq!(s.rx_rate, Some(700), "the connected twin is counted");
+    assert!(find(&s, "B").counted);
 }

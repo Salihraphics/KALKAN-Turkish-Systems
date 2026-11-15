@@ -677,6 +677,7 @@ impl NetworkMonitor for ScriptedNet {
             kind,
             connected: true,
             hardware: true,
+            mac: None,
             rx_bytes: rx,
             tx_bytes: rx / 2,
             link_speed_bps: None,

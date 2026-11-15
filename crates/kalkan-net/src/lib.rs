@@ -57,6 +57,11 @@ pub struct InterfaceSample {
     /// Only hardware interfaces are counted in totals, so traffic that
     /// passes through a VPN and a physical NIC is not counted twice.
     pub hardware: bool,
+    /// MAC address (48-bit, packed), if the interface has one. Two hardware
+    /// interfaces with the same MAC carry the same traffic (e.g. a Hyper-V
+    /// synthetic NIC and its SR-IOV virtual function under Azure
+    /// Accelerated Networking), so only one of them is counted.
+    pub mac: Option<u64>,
     /// Cumulative counters kept by the OS (since the adapter came up).
     pub rx_bytes: u64,
     pub tx_bytes: u64,
@@ -118,8 +123,11 @@ pub struct InterfaceStatus {
     pub description: String,
     pub kind: InterfaceKind,
     pub connected: bool,
-    /// Included in the totals (connected hardware interface).
+    /// Included in the totals (connected hardware interface, not a
+    /// duplicate of another counted interface).
     pub counted: bool,
+    /// Name of the counted interface this one duplicates (same MAC), if any.
+    pub duplicate_of: Option<String>,
     /// OS cumulative counters.
     pub rx_bytes: u64,
     pub tx_bytes: u64,
@@ -226,6 +234,23 @@ impl NetTracker {
         self.started_at.get_or_insert(snap.at);
         self.samples += 1;
 
+        // Same-MAC groups among connected hardware interfaces: count only the
+        // lowest id (stable across samples, so totals do not jump).
+        let mut owner_by_mac: HashMap<u64, (InterfaceId, &str)> = HashMap::new();
+        for s in snap.interfaces.iter().filter(|s| s.connected && s.hardware) {
+            if let Some(mac) = s.mac.filter(|&m| m != 0) {
+                let e = owner_by_mac.entry(mac).or_insert((s.id, &s.name));
+                if s.id < e.0 {
+                    *e = (s.id, &s.name);
+                }
+            }
+        }
+        let duplicate_of = |s: &InterfaceSample| -> Option<String> {
+            let mac = s.mac.filter(|&m| m != 0)?;
+            let (owner, name) = owner_by_mac.get(&mac)?;
+            (s.connected && s.hardware && *owner != s.id).then(|| (*name).to_owned())
+        };
+
         let mut changes = Vec::new();
         let mut interfaces = Vec::with_capacity(snap.interfaces.len());
         let (mut rx_sum, mut tx_sum) = (0u64, 0u64);
@@ -233,7 +258,8 @@ impl NetTracker {
         self.next.clear();
 
         for s in &snap.interfaces {
-            let counted = s.connected && s.hardware;
+            let dup = duplicate_of(s);
+            let counted = s.connected && s.hardware && dup.is_none();
             let old = self.prev.get(&s.id);
             let (rx_rate, tx_rate) = match (old, dt) {
                 (Some(o), Some(dt)) => (rate(o.rx, s.rx_bytes, dt), rate(o.tx, s.tx_bytes, dt)),
@@ -278,6 +304,7 @@ impl NetTracker {
                 kind: s.kind,
                 connected: s.connected,
                 counted,
+                duplicate_of: dup,
                 rx_bytes: s.rx_bytes,
                 tx_bytes: s.tx_bytes,
                 rx_rate,

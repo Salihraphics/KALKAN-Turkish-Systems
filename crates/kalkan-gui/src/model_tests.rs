@@ -19,6 +19,7 @@ fn iface(name: &str, counted: bool, connected: bool) -> InterfaceStatus {
         kind: InterfaceKind::Ethernet,
         connected,
         counted,
+        duplicate_of: None,
         rx_bytes: 5 * 1024 * 1024,
         tx_bytes: 1024 * 1024,
         rx_rate: Some(2048),

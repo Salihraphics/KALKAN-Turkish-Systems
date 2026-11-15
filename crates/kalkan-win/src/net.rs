@@ -73,6 +73,15 @@ pub(crate) fn is_hardware(r: RowFlags) -> bool {
     r.flags & FLAG_HARDWARE_INTERFACE != 0
 }
 
+/// Pack a 6-byte MAC address; other lengths and all-zero addresses are
+/// treated as "no MAC" (they never merge interfaces).
+pub(crate) fn mac_from_bytes(b: &[u8]) -> Option<u64> {
+    if b.len() != 6 || b.iter().all(|&x| x == 0) {
+        return None;
+    }
+    Some(b.iter().fold(0u64, |acc, &x| (acc << 8) | x as u64))
+}
+
 /// Decode a NUL-terminated UTF-16 buffer.
 pub(crate) fn wide_to_string(buf: &[u16]) -> String {
     let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
@@ -118,6 +127,8 @@ impl NetworkMonitor for WinNetworkMonitor {
                 continue;
             }
             let speed = row.ReceiveLinkSpeed.max(row.TransmitLinkSpeed);
+            let mac_len = (row.PhysicalAddressLength as usize).min(row.PhysicalAddress.len());
+            let mac = mac_from_bytes(&row.PhysicalAddress[..mac_len]);
             out.interfaces.push(InterfaceSample {
                 // SAFETY: NET_LUID_LH is a union whose `Value` covers all bits.
                 id: unsafe { row.InterfaceLuid.Value },
@@ -126,6 +137,7 @@ impl NetworkMonitor for WinNetworkMonitor {
                 kind: kind_of(row.Type),
                 connected: flags.oper_up,
                 hardware: is_hardware(flags),
+                mac,
                 rx_bytes: row.InOctets,
                 tx_bytes: row.OutOctets,
                 // u64::MAX / 0 mean "unknown" for some virtual adapters.
@@ -188,6 +200,17 @@ mod tests {
         let teredo_down = r(IF_TYPE_TUNNEL, 0, false);
         assert!(is_relevant(vpn_up) && !is_hardware(vpn_up));
         assert!(!is_relevant(teredo_down));
+    }
+
+    #[test]
+    fn mac_packing() {
+        assert_eq!(
+            mac_from_bytes(&[0, 0x15, 0x5D, 1, 2, 3]),
+            Some(0x00_15_5D_01_02_03)
+        );
+        assert_eq!(mac_from_bytes(&[0; 6]), None);
+        assert_eq!(mac_from_bytes(&[1, 2, 3]), None);
+        assert_eq!(mac_from_bytes(&[]), None);
     }
 
     #[test]

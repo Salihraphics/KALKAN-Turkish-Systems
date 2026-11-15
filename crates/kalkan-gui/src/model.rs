@@ -676,8 +676,9 @@ pub fn page_view(page: Page, ui: &UiState, info: &AppInfo) -> PageView {
             table: Some(interfaces_table(ui)),
             note: Some(
                 "Read-only: KALKAN reads the counters Windows already keeps and never captures, \
-                 blocks or modifies traffic. Totals count connected hardware adapters only; VPN \
-                 and virtual adapters are listed but not counted, to avoid double counting."
+                 blocks or modifies traffic. Totals count each connected hardware adapter once: \
+                 VPN/virtual adapters and adapters sharing a MAC address with a counted one \
+                 (e.g. accelerated networking) are listed but not counted, to avoid double counting."
                     .into(),
             ),
             ..PageView::default()

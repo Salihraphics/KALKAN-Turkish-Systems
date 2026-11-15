@@ -79,6 +79,10 @@ jobs:
           $delta = $after.Rx - $before.Rx
           Write-Host "downloaded $got bytes; counted receive bytes grew by $delta"
           if ($delta -lt $got) { throw "receive counters grew by $delta bytes, less than the $got bytes downloaded" }
+          # Upper bound catches double counting (CI run 13 saw exactly 2x before
+          # same-MAC de-duplication). Allows some unrelated background traffic.
+          $limit = [uint64]($got * 1.5)
+          if ($delta -gt $limit) { throw "receive counters grew by $delta bytes, more than 1.5x the $got bytes downloaded: double counting?" }
       - name: Benchmark (monitoring overhead)
         shell: pwsh
         run: |

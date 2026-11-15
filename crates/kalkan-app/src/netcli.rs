@@ -34,18 +34,22 @@ pub fn print_interfaces() -> ExitCode {
         "  {:<26} {:<9} {:<13} {:>10} {:>14} {:>14}  ADAPTER",
         "NAME", "TYPE", "STATE", "LINK", "RECEIVED", "SENT"
     );
+    // Use the tracker's rules (incl. same-MAC de-duplication) so this output
+    // matches what the engine counts.
+    let (status, _) = kalkan_net::NetTracker::new().update(&snap);
     let (mut rx, mut tx, mut counted) = (0u64, 0u64, 0);
-    for i in &snap.interfaces {
-        let is_counted = i.connected && i.hardware;
+    for i in &status.interfaces {
+        let is_counted = i.counted;
         if is_counted {
             rx += i.rx_bytes;
             tx += i.tx_bytes;
             counted += 1;
         }
-        let state = match (i.connected, i.hardware) {
-            (true, true) => "connected",
-            (true, false) => "up (virtual)",
-            (false, _) => "disconnected",
+        let state = match (i.connected, i.counted, &i.duplicate_of) {
+            (true, true, _) => "connected",
+            (true, false, Some(_)) => "duplicate",
+            (true, false, None) => "up (virtual)",
+            (false, _, _) => "disconnected",
         };
         println!(
             "{} {:<26} {:<9} {:<13} {:>10} {:>10.1} MiB {:>10.1} MiB  {}",
@@ -56,10 +60,13 @@ pub fn print_interfaces() -> ExitCode {
             speed(i.link_speed_bps),
             mib(i.rx_bytes),
             mib(i.tx_bytes),
-            i.description
+            match &i.duplicate_of {
+                Some(o) => format!("{} (same MAC as {o})", i.description),
+                None => i.description.clone(),
+            }
         );
     }
-    println!("(* = counted in totals: connected hardware interfaces)");
+    println!("(* = counted in totals: connected hardware interfaces, each MAC once)");
     println!("INTERFACES={}", snap.interfaces.len());
     println!("COUNTED={counted}");
     println!("TOTAL_RX={rx}");
