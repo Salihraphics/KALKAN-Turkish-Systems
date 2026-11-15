@@ -250,6 +250,12 @@ impl Painter<'_> {
     }
 
     pub fn text(&self, s: &str, r: Rect, font: &Gdi, c: Rgb, flags: DRAW_TEXT_FORMAT) {
+        // Never hand GDI an empty buffer: a zero-length slice carries a
+        // dangling (non-null) pointer, and DrawTextW with DT_END_ELLIPSIS is
+        // not guaranteed to leave it alone.
+        if s.is_empty() || r.w <= 0 || r.h <= 0 {
+            return;
+        }
         let mut buf: Vec<u16> = s.encode_utf16().collect();
         let mut rc = to_rect(r);
         // SAFETY: valid DC; `buf` and `rc` outlive the call; font restored.
@@ -264,6 +270,9 @@ impl Painter<'_> {
 
     /// Width of `s` in pixels when drawn with `font`.
     pub fn measure(&self, s: &str, font: &Gdi) -> i32 {
+        if s.is_empty() {
+            return 0;
+        }
         let mut buf: Vec<u16> = s.encode_utf16().collect();
         let mut rc = RECT::default();
         // SAFETY: valid DC; DT_CALCRECT only measures; font restored.
@@ -852,8 +861,10 @@ impl WindowState {
         let sub = match (self.ui.engine, self.ui.status.running_for) {
             (EngineState::Running, Some(d)) => format!("Running for {}", format_duration(d)),
             (EngineState::Stopped, _) => "Ready to start".to_owned(),
+            (EngineState::Running, None) => "Running".to_owned(),
+            (EngineState::Starting, _) => "Initialising…".to_owned(),
+            (EngineState::Stopping, _) => "Waiting for the worker to stop…".to_owned(),
             (EngineState::Failed, _) => "See the message above; Start retries".to_owned(),
-            _ => String::new(),
         };
         p.line(
             &sub,

@@ -1028,6 +1028,82 @@ fn run_message_loop_for(hwnd: HWND, d: Duration) {
     }
 }
 
+/// Force every page/engine-state/notice/DPI combination through WM_PAINT
+/// (RDW_UPDATENOW), and hover in/out on every button. Returns frames painted.
+fn paint_every_state(hwnd: HWND, nav: [HWND; 5]) -> usize {
+    let redraw = || {
+        // SAFETY: synchronous repaint of our own window; no borrow is held.
+        unsafe {
+            let _ = RedrawWindow(
+                Some(hwnd),
+                None,
+                None,
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+            );
+        }
+    };
+    let notices = [
+        None,
+        Some(crate::model::Notice {
+            kind: NoticeKind::Info,
+            message: "Wi-Fi connected".into(),
+        }),
+        Some(crate::model::Notice {
+            kind: NoticeKind::Warning,
+            message: "Start ignored".into(),
+        }),
+        Some(crate::model::Notice {
+            kind: NoticeKind::Error,
+            message: "The engine failed to start: test".into(),
+        }),
+    ];
+    let mut frames = 0;
+    for dpi in [96u32, 144] {
+        for state in EngineState::ALL {
+            for notice in &notices {
+                for page in Page::ALL {
+                    with_state_mut(hwnd, |s| {
+                        if s.dpi != dpi {
+                            s.on_dpi_changed(dpi);
+                        }
+                        s.ui.engine = state;
+                        s.ui.status.state = Some(state);
+                        s.ui.notice = notice.clone();
+                        s.ui.navigate(page);
+                        s.relayout();
+                    });
+                    redraw();
+                    frames += 1;
+                }
+            }
+        }
+    }
+    // Hover in and out of every button (exercises the subclass procedure).
+    with_state_mut(hwnd, |s| {
+        s.ui.engine = EngineState::Stopped;
+        s.ui.navigate(Page::Dashboard);
+        s.relayout();
+    });
+    let buttons: Vec<HWND> = nav
+        .iter()
+        .copied()
+        .chain(with_state(hwnd, |s| [s.start_btn, s.stop_btn]).unwrap_or_default())
+        .collect();
+    for b in buttons {
+        // SAFETY: synthetic mouse messages to our own child buttons.
+        unsafe {
+            SendMessageW(b, WM_MOUSEMOVE, Some(WPARAM(0)), Some(LPARAM(0x0005_0005)));
+            redraw();
+            SendMessageW(b, WM_MOUSELEAVE, Some(WPARAM(0)), Some(LPARAM(0)));
+            redraw();
+        }
+        frames += 2;
+    }
+    with_state_mut(hwnd, |s| s.on_dpi_changed(96));
+    redraw();
+    frames
+}
+
 /// Simulate the window moving to a monitor with `dpi` (WM_DPICHANGED with the
 /// current window rectangle as the suggestion).
 fn simulate_dpi(hwnd: HWND, dpi: u32) {
@@ -1392,6 +1468,27 @@ fn self_test(
     check(
         format!("layout follows restore to {w}x{h}"),
         layout_matches((w, h)),
+    );
+
+    // ── Deterministic paint coverage ─────────────────────────────────────
+    // Paint every page in every engine state, with every notice kind, at
+    // 96 and 144 DPI, synchronously. Transitional states normally last only
+    // milliseconds, so without this a paint bug in them shows up only when a
+    // WM_PAINT happens to land in that window.
+    let painted = paint_every_state(hwnd, nav);
+    check(
+        format!("synchronous paint of all pages x states x notices x DPI ({painted} frames)"),
+        painted > 0,
+    );
+    // Restore the real state from the engine.
+    with_state_mut(hwnd, |s| {
+        s.ui.notice = None;
+        s.send(Command::QueryStatus);
+    });
+    let restored = wait_until(hwnd, STEP_TIMEOUT, |s| s.ui.engine == EngineState::Stopped);
+    check(
+        "real engine state restored after paint coverage".into(),
+        restored,
     );
 
     // ── Display scaling: simulate moving to a 150 % monitor and back ──────
