@@ -50,6 +50,10 @@ Captured automatically by `kalkan --self-test` on the Windows CI runner at 96 DP
 |---|---|---|
 | <img src="docs/screenshots/dashboard-duplicate-start.png" width="300" alt="Warning: Start ignored, the engine is already running" /> | <img src="docs/screenshots/logs.png" width="300" alt="Logs page" /> | <img src="docs/screenshots/settings.png" width="300" alt="Settings page" /> |
 
+At the minimum window size (760 × 560) the grid reflows and the engine's scope disclaimer stays fully readable:
+
+<p align="center"><img src="docs/screenshots/dashboard-minimum-size.png" width="380" alt="Dashboard at minimum size, engine stopped" /></p>
+
 **LIVE** values come from the running engine. **SYSTEM** and **CONFIG** values are read from Windows and from `kalkan.toml`. Values marked **NOT AVAILABLE** do not exist yet; KALKAN never shows invented numbers.
 
 ### The engine: GoodBoyDPI
