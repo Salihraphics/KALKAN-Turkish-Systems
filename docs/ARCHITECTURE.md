@@ -16,14 +16,15 @@ kalkan/
 ├── .cargo/config.toml         mingw linker for Linux→Windows cross builds
 ├── .github/workflows/ci.yml   Windows MSVC + Linux cross-compile CI
 ├── docs/ARCHITECTURE.md
+├── docs/GUI.md               GUI design, layout, honesty rules, self-test
 └── crates/
     ├── kalkan-app/      binary `kalkan`: argument parsing, wiring, startup/shutdown
-    ├── kalkan-gui/      native Win32 UI (Phase 2)
-    ├── kalkan-core/     lifecycle state machine + Command/Event protocol
+    ├── kalkan-gui/      native Win32 UI: model/layout/theme (portable) + win32 (Windows)
+    ├── kalkan-core/     lifecycle state machine, Command/Event protocol, EngineLink
     ├── kalkan-net/      read-only NetworkMonitor trait, counters, rate math
     ├── kalkan-config/   TOML schema, defaults, validation, atomic save, app dirs
     ├── kalkan-logging/  tracing subscriber setup
-    └── kalkan-win/      Windows integration (privileges, OS queries); all FFI
+    └── kalkan-win/      Windows integration (privileges, process memory, console)
 ```
 
 ### Dependency graph (enforced by Cargo.toml)
@@ -40,6 +41,8 @@ kalkan/
 * `kalkan-win` pulls in the `windows` crate only under `cfg(windows)`.
 
 ## GUI ↔ engine interface
+
+The GUI holds a `Box<dyn kalkan_core::EngineLink>` (`send(Command)` / `try_recv() -> Option<Event>`, both non-blocking). Phase 2 passes `UnimplementedEngine`, which honestly reports that nothing was started. See [GUI.md](GUI.md) for the GUI internals.
 
 ```
  UI thread                         Engine thread (Phase 3)
