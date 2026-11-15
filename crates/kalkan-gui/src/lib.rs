@@ -1,25 +1,95 @@
 //! KALKAN native Win32 GUI.
 //!
-//! **Phase 1: not implemented.** This crate exists so the dependency graph is
-//! fixed from the start: the GUI depends on `kalkan-core` (for [`Command`] /
-//! [`Event`]) and nothing else from the engine side. It must never depend on
-//! `kalkan-net` directly.
+//! * [`model`], [`layout`] and [`theme`] are platform-independent safe Rust and
+//!   are unit-tested on any OS.
+//! * `win32` (Windows only) contains the window, the message loop and GDI
+//!   painting. It is the only module in this crate allowed to use `unsafe`.
 //!
-//! Phase 2 will add the main window, the five pages (Dashboard, Network
-//! Monitoring, Statistics, Logs, Settings) and the message pump.
+//! The GUI depends on `kalkan-core` only. It talks to the engine through
+//! [`kalkan_core::EngineLink`] and never touches the network layer.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
-pub use kalkan_core::{Command, Event};
+pub mod layout;
+pub mod model;
+pub mod theme;
 
-/// Names of the pages the GUI will provide, in navigation order.
-pub const PAGES: [&str; 5] = [
-    "Dashboard",
-    "Network Monitoring",
-    "Statistics",
-    "Logs",
-    "Settings",
-];
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod win32;
 
-/// Whether this build contains a working GUI.
-pub const IMPLEMENTED: bool = false;
+use std::path::PathBuf;
+
+pub use kalkan_core::{Command, EngineLink, Event};
+pub use model::{AppInfo, Page};
+
+/// Options for [`run`].
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    /// Show the window minimised (from `ui.start_minimized`).
+    pub start_minimized: bool,
+    /// Run the scripted self-test instead of waiting for the user.
+    pub self_test: bool,
+    /// During self-test, save a BMP screenshot of each step here.
+    pub screenshot_dir: Option<PathBuf>,
+}
+
+/// One self-test assertion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Check {
+    pub name: String,
+    pub passed: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SelfTestReport {
+    pub checks: Vec<Check>,
+    pub screenshots: Vec<PathBuf>,
+    /// Screenshot failures are reported but do not fail the self-test.
+    pub screenshot_errors: Vec<String>,
+}
+
+impl SelfTestReport {
+    pub fn passed(&self) -> bool {
+        !self.checks.is_empty() && self.checks.iter().all(|c| c.passed)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GuiError {
+    #[error("the graphical interface is only available on Windows")]
+    Unsupported,
+    #[error("Windows API call {call} failed: {message}")]
+    Win32 { call: &'static str, message: String },
+    #[error("an internal error occurred in the user interface")]
+    Panicked,
+}
+
+/// Create the main window and run the message loop until it closes.
+///
+/// Returns a report when `opts.self_test` is set.
+pub fn run(
+    info: AppInfo,
+    engine: Box<dyn EngineLink>,
+    opts: RunOptions,
+) -> Result<Option<SelfTestReport>, GuiError> {
+    #[cfg(windows)]
+    {
+        win32::run(info, engine, opts)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (info, engine, opts);
+        Err(GuiError::Unsupported)
+    }
+}
+
+/// Show a blocking error dialog, or print to stderr where there is no GUI.
+/// Used for start-up failures (e.g. invalid configuration) that a user who
+/// double-clicked the program would otherwise never see.
+pub fn show_error(title: &str, message: &str) {
+    #[cfg(windows)]
+    win32::message_box_error(title, message);
+    #[cfg(not(windows))]
+    eprintln!("{title}: {message}");
+}

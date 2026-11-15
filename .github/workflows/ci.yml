@@ -41,7 +41,26 @@ jobs:
           Set-Content bad.toml "[monitor]`nsample_interval_ms = 5"
           Invoke-Kalkan 1 @('--config', 'bad.toml', '--check-config')
           Invoke-Kalkan 2 @('--no-such-flag')
-          Invoke-Kalkan 0 @('--config', 'kalkan.toml')
+          Invoke-Kalkan 2 @('--screenshots', 'x')
+      - name: GUI self-test (real window, scripted clicks, screenshots)
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Start-Process -FilePath ./target/release/kalkan.exe `
+               -ArgumentList @('--config', 'missing.toml', '--self-test', '--screenshots', 'screenshots') `
+               -Wait -PassThru -NoNewWindow `
+               -RedirectStandardOutput selftest.txt -RedirectStandardError selftest-err.txt
+          Get-Content selftest.txt, selftest-err.txt
+          if ($p.ExitCode -ne 0) { throw "GUI self-test failed with exit code $($p.ExitCode)" }
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: gui-screenshots
+          path: |
+            screenshots/
+            selftest.txt
+            selftest-err.txt
       - uses: actions/upload-artifact@v5
         with:
           name: kalkan-windows-x64

@@ -1,6 +1,6 @@
 [package]
 name = "kalkan-win"
-description = "KALKAN Windows integration: privilege checks and other OS queries. All unsafe Win32 calls live here."
+description = "KALKAN Windows integration: privileges, process memory, console attach."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,8 @@ workspace = true
 features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_ProcessStatus",
     "Win32_System_Threading",
 ]
 

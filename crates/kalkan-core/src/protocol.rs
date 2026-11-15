@@ -48,6 +48,10 @@ pub enum Event {
     Error {
         message: String,
     },
+    /// A user-visible informational notice (not an error).
+    Info {
+        message: String,
+    },
     /// The engine thread has exited; no further events will arrive.
     ShutdownComplete,
 }
