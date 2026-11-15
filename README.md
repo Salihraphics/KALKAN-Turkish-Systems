@@ -7,6 +7,7 @@
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?style=for-the-badge&logo=windows" />
   <img src="https://img.shields.io/badge/Architecture-Native-success?style=for-the-badge" />
   <img src="https://img.shields.io/badge/Status-Phase%201%20of%207-yellow?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" />
 </p>
 
 <p align="center"><b>Lightweight. Native. Reliable.</b></p>
@@ -47,9 +48,11 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 | TOML config: defaults, unknown-key rejection, range validation, atomic save | ✅ | 12 unit tests |
 | Logging initialisation (`tracing`, stderr) | ✅ | 2 unit tests plus a manual run |
 | Read-only `NetworkMonitor` trait, counter and rate math | ✅ | 7 unit tests (resets, saturation, ordering) |
-| Administrator-privilege detection (`kalkan-win`) | ⚠️ | Cross-compiles for Windows. The runtime test runs only on Windows CI |
+| Administrator-privilege detection (`kalkan-win`) | ✅ | Unit test and smoke test on the Windows CI runner (`windows-latest`) |
 | `kalkan` CLI: `--version`, `--config`, `--check-config`, `--print-default-config` | ✅ | 3 unit tests plus a manual smoke test |
-| Windows CI (MSVC build, clippy, tests, smoke test) | ⚠️ | Workflow written but not yet run on GitHub |
+| Windows CI (MSVC build, clippy, tests, CLI smoke test with exit-code checks) | ✅ | GitHub Actions `windows-latest` |
+
+**Windows runtime coverage so far:** the Windows CI runner (`windows-latest`, Windows Server) ran the unit tests and the CLI smoke test. The app has not yet been run on a Windows 10 or 11 desktop machine.
 
 ### Not implemented yet
 
@@ -135,6 +138,7 @@ cargo test --workspace
 
 ## 📜 License
 
-License: to be determined.
+KALKAN is released under the [MIT License](LICENSE).
+Copyright (c) 2026 Salih Kıvanç TULUM.
 
 <p align="center">Built with 🦀 Rust</p>

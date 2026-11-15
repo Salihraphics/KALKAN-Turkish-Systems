@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 publish.workspace = true
 
 [[bin]]
@@ -15,7 +16,6 @@ path = "src/main.rs"
 kalkan-core.workspace = true
 kalkan-config.workspace = true
 kalkan-logging.workspace = true
-kalkan-net.workspace = true
 kalkan-win.workspace = true
 kalkan-gui.workspace = true
 tracing.workspace = true

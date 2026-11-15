@@ -12,7 +12,7 @@ jobs:
     name: Windows (MSVC) — build, lint, test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -23,11 +23,26 @@ jobs:
       - name: Smoke test
         shell: pwsh
         run: |
-          ./target/release/kalkan.exe --version
-          ./target/release/kalkan.exe --print-default-config > kalkan.toml
-          ./target/release/kalkan.exe --config kalkan.toml --check-config
-          ./target/release/kalkan.exe --config kalkan.toml
-      - uses: actions/upload-artifact@v4
+          $ErrorActionPreference = 'Stop'
+          # Run kalkan.exe, show its output, and fail unless the exit code matches.
+          function Invoke-Kalkan([int]$Expect, [string[]]$KArgs) {
+            $p = Start-Process -FilePath ./target/release/kalkan.exe -ArgumentList $KArgs `
+                 -Wait -PassThru -NoNewWindow `
+                 -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+            Get-Content out.txt, err.txt
+            if ($p.ExitCode -ne $Expect) {
+              throw "kalkan $($KArgs -join ' ') exited with $($p.ExitCode), expected $Expect"
+            }
+          }
+          Invoke-Kalkan 0 @('--version')
+          Invoke-Kalkan 0 @('--print-default-config')
+          Copy-Item out.txt kalkan.toml
+          Invoke-Kalkan 0 @('--config', 'kalkan.toml', '--check-config')
+          Set-Content bad.toml "[monitor]`nsample_interval_ms = 5"
+          Invoke-Kalkan 1 @('--config', 'bad.toml', '--check-config')
+          Invoke-Kalkan 2 @('--no-such-flag')
+          Invoke-Kalkan 0 @('--config', 'kalkan.toml')
+      - uses: actions/upload-artifact@v5
         with:
           name: kalkan-windows-x64
           path: target/release/kalkan.exe
@@ -36,7 +51,7 @@ jobs:
     name: Linux — platform-independent crates + Windows cross-compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
