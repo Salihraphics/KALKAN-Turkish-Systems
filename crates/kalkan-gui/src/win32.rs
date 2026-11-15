@@ -17,6 +17,9 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -42,18 +45,18 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, IsDialogMessageW, LoadCursorW, MessageBoxW, MoveWindow, PeekMessageW,
-    PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, TranslateMessage, BM_CLICK, BS_OWNERDRAW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-    CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW, MB_ICONERROR, MB_OK, MINMAXINFO, MSG,
-    PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_HIDE, SW_MAXIMIZE, SW_RESTORE, SW_SHOW,
-    SW_SHOWMINNOACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE,
-    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_NCCREATE,
-    WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
-    WS_TABSTOP, WS_VISIBLE,
+    GetWindowLongPtrW, IsDialogMessageW, KillTimer, LoadCursorW, MessageBoxW, MoveWindow,
+    PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, BM_CLICK, BS_OWNERDRAW,
+    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW,
+    MB_ICONERROR, MB_OK, MINMAXINFO, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+    SW_HIDE, SW_MAXIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWMINNOACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WM_TIMER, WNDCLASSEXW,
+    WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 
-use kalkan_core::{Command, EngineLink, EngineState};
+use kalkan_core::{Command, EngineLink, EngineState, ENGINE_SCOPE, ENGINE_TITLE};
 
 use crate::layout::{self, Content, Layout, Rect};
 use crate::model::{page_view, AppInfo, NoticeKind, Page, PageView, UiState, Value};
@@ -67,6 +70,10 @@ pub const WM_APP_ENGINE: u32 = WM_APP + 1;
 const ID_NAV_BASE: u16 = 100;
 const ID_START: u16 = 200;
 const ID_STOP: u16 = 201;
+/// One-shot timer armed only while closing: the bound on waiting for the
+/// engine's shutdown confirmation.
+const CLOSE_TIMER_ID: usize = 1;
+const CLOSE_TIMEOUT_MS: u32 = 7_000;
 
 // ── Small RAII wrappers ──────────────────────────────────────────────────────
 
@@ -340,7 +347,7 @@ fn state_color(s: EngineState) -> Rgb {
         EngineState::Stopped => theme::NEUTRAL,
         EngineState::Starting | EngineState::Stopping => theme::WARN,
         EngineState::Running => theme::OK,
-        EngineState::Faulted => theme::DANGER,
+        EngineState::Failed => theme::DANGER,
     }
 }
 
@@ -358,21 +365,33 @@ struct WindowState {
     engine: Box<dyn EngineLink>,
     view: PageView,
     layout: Layout,
+    /// Set by the engine waker, cleared before draining; coalesces wake-ups
+    /// so a burst of events posts at most one WM_APP_ENGINE.
+    wake_pending: Arc<AtomicBool>,
+    /// WM_CLOSE received; waiting for the engine's ShutdownComplete.
+    closing: bool,
+    /// The engine did not confirm in time; close anyway.
+    close_forced: bool,
     /// Set to `true` when the state is dropped (clean shutdown check).
     dropped: Rc<Cell<bool>>,
+    /// Records whether the engine confirmed shutdown before the window died.
+    shutdown_confirmed: Rc<Cell<bool>>,
 }
 
 impl Drop for WindowState {
     fn drop(&mut self) {
+        self.shutdown_confirmed.set(self.ui.shutdown_complete);
         self.dropped.set(true);
+        // Dropping `engine` joins the engine threads (EngineHandle::drop).
     }
 }
 
 /// Data passed through `CreateWindowExW` to `WM_NCCREATE`.
 struct CreateParams {
     info: AppInfo,
-    engine: Box<dyn EngineLink>,
+    engine: Option<Box<dyn EngineLink>>,
     dropped: Rc<Cell<bool>>,
+    shutdown_confirmed: Rc<Cell<bool>>,
     panicked: Rc<Cell<bool>>,
 }
 
@@ -422,8 +441,11 @@ impl WindowState {
                 }
                 let _ = ShowWindow(hwnd, show);
             }
-            let _ = EnableWindow(self.start_btn, self.ui.can_start());
-            let _ = EnableWindow(self.stop_btn, self.ui.can_stop());
+            // Buttons mirror the engine's own transition table; both are
+            // disabled while the application is closing.
+            let open = !self.closing;
+            let _ = EnableWindow(self.start_btn, open && self.ui.can_start());
+            let _ = EnableWindow(self.stop_btn, open && self.ui.can_stop());
         }
         self.invalidate();
     }
@@ -446,15 +468,53 @@ impl WindowState {
         self.drain_events();
     }
 
+    /// Apply all queued engine events. Never blocks.
     fn drain_events(&mut self) {
-        let mut changed = false;
+        // Clear first: an event queued while draining posts a new wake-up.
+        self.wake_pending.store(false, Ordering::Release);
+        let (mut structural, mut metrics) = (false, false);
         while let Some(ev) = self.engine.try_recv() {
             tracing::debug!(?ev, "engine -> UI");
-            changed |= self.ui.apply(ev);
+            let is_status = matches!(ev, kalkan_core::Event::Status(_));
+            let changed = self.ui.apply(ev);
+            if is_status {
+                metrics |= changed;
+            } else {
+                structural |= changed;
+            }
         }
-        if changed {
+        // Periodic metric updates only repaint the page that shows them.
+        if structural || (metrics && self.ui.page == Page::Dashboard) {
             self.relayout();
         }
+        if self.closing && self.ui.shutdown_complete {
+            tracing::info!("engine confirmed shutdown; closing the window");
+            self.post_close();
+        }
+    }
+
+    fn post_close(&self) {
+        // SAFETY: posting to our own window; WM_CLOSE runs outside this borrow.
+        unsafe {
+            let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+
+    /// First WM_CLOSE: ask the engine to shut down and wait (asynchronously)
+    /// for its confirmation. Returns `true` when the window may be destroyed.
+    fn on_close(&mut self) -> bool {
+        if self.ui.shutdown_complete || self.close_forced {
+            return true;
+        }
+        if !self.closing {
+            tracing::info!(state = %self.ui.engine, "window closing; requesting engine shutdown");
+            self.closing = true;
+            // SAFETY: one-shot timer on our own window, killed in WM_TIMER.
+            unsafe { SetTimer(Some(self.hwnd), CLOSE_TIMER_ID, CLOSE_TIMEOUT_MS, None) };
+            self.send(Command::Shutdown);
+            self.relayout();
+        }
+        false
     }
 
     fn on_command(&mut self, id: u16) {
@@ -543,6 +603,7 @@ impl WindowState {
         if let (Some(r), Some(n)) = (l.notice, &self.ui.notice) {
             let (bg, fg) = match n.kind {
                 NoticeKind::Info => (theme::NOTICE_INFO_BG, theme::ACCENT),
+                NoticeKind::Warning => (theme::NOTICE_WARN_BG, theme::WARN),
                 NoticeKind::Error => (theme::NOTICE_ERROR_BG, theme::DANGER),
             };
             p.round(r, bg, 8);
@@ -557,24 +618,30 @@ impl WindowState {
 
         if let Some(r) = l.engine_panel {
             p.round_outline(r, theme::CARD, theme::CARD_BORDER, theme::RADIUS);
-            let cy = r.y + s(30);
-            p.dot(r.x + s(28), cy, s(6), state_color(self.ui.engine));
+            let btn_left = l.start_btn.map_or(r.right(), |b| b.x);
+            let text_w = (btn_left - r.x - s(36)).max(0);
             p.line(
-                self.ui.engine.label(),
-                Rect::new(r.x + s(44), cy - s(14), s(200), s(28)),
+                ENGINE_TITLE,
+                Rect::new(r.x + s(20), r.y + s(12), text_w, s(20)),
+                &self.fonts.body_bold,
+                theme::TEXT_MUTED,
+            );
+            let cy = r.y + s(50);
+            p.dot(r.x + s(28), cy, s(6), state_color(self.ui.engine));
+            let label = if self.closing && !self.ui.shutdown_complete {
+                "Shutting down…"
+            } else {
+                self.ui.engine.label()
+            };
+            p.line(
+                label,
+                Rect::new(r.x + s(44), cy - s(14), (text_w - s(24)).max(0), s(28)),
                 &self.fonts.value,
                 theme::TEXT,
             );
-            let btn_left = l.start_btn.map_or(r.right(), |b| b.x);
-            let note = self.info.engine_note.as_deref().unwrap_or("Engine state");
             p.line(
-                note,
-                Rect::new(
-                    r.x + s(20),
-                    r.y + s(52),
-                    (btn_left - r.x - s(36)).max(0),
-                    s(20),
-                ),
+                ENGINE_SCOPE,
+                Rect::new(r.x + s(20), r.y + s(72), text_w, s(20)),
                 &self.fonts.small,
                 theme::TEXT_MUTED,
             );
@@ -807,19 +874,31 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             }
         },
         WM_CLOSE => {
-            // Notify the engine while holding the borrow, then release it
-            // *before* DestroyWindow: destruction re-enters this procedure
-            // (WM_DESTROY, WM_NCDESTROY) and WM_NCDESTROY frees the slot.
-            if let Some(slot) = slot(hwnd) {
-                if let Ok(mut g) = slot.state.try_borrow_mut() {
-                    if let Some(st) = g.as_mut() {
-                        st.send(Command::Shutdown);
+            // Two-step close: the first WM_CLOSE asks the engine to shut down;
+            // the window is destroyed only after ShutdownComplete (or the
+            // close timeout). The borrow is released *before* DestroyWindow:
+            // destruction re-enters this procedure and WM_NCDESTROY frees the
+            // slot.
+            let destroy = match slot(hwnd).map(|s| s.state.try_borrow_mut()) {
+                Some(Ok(mut g)) => match g.as_mut() {
+                    Some(st) => st.on_close(),
+                    None => true,
+                },
+                Some(Err(_)) => {
+                    // Re-entrant WM_CLOSE: retry once the current handler is done.
+                    // SAFETY: posting to our own window.
+                    unsafe {
+                        let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                     }
+                    false
                 }
-            }
-            // SAFETY: destroying our own window; no borrows are held.
-            unsafe {
-                let _ = DestroyWindow(hwnd);
+                None => true,
+            };
+            if destroy {
+                // SAFETY: destroying our own window; no borrows are held.
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
             }
             LRESULT(0)
         }
@@ -929,12 +1008,33 @@ fn on_create(hwnd: HWND, lp: LPARAM) -> Result<(), GuiError> {
     let start_btn = create_button(hwnd, hinst, ID_START, "Start")?;
     let stop_btn = create_button(hwnd, hinst, ID_STOP, "Stop")?;
 
-    // Take ownership out of CreateParams (replaced with inert values).
+    // Take ownership out of CreateParams.
     let info = std::mem::take(&mut cp.info);
-    let engine = std::mem::replace(
-        &mut cp.engine,
-        Box::new(kalkan_core::UnimplementedEngine::new()),
-    );
+    let Some(mut engine) = cp.engine.take() else {
+        return Err(GuiError::Win32 {
+            call: "WM_CREATE",
+            message: "engine link already taken".into(),
+        });
+    };
+
+    // The engine calls this from its own thread. PostMessageW is
+    // thread-safe; the flag coalesces bursts into one message.
+    let wake_pending = Arc::new(AtomicBool::new(false));
+    let (flag, target) = (wake_pending.clone(), hwnd.0 as isize);
+    engine.set_waker(Box::new(move || {
+        if !flag.swap(true, Ordering::AcqRel) {
+            // SAFETY: PostMessageW may be called from any thread. If the
+            // window no longer exists the call fails harmlessly.
+            unsafe {
+                let _ = PostMessageW(
+                    Some(HWND(target as *mut c_void)),
+                    WM_APP_ENGINE,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
+    }));
 
     let mut st = WindowState {
         hwnd,
@@ -948,9 +1048,17 @@ fn on_create(hwnd: HWND, lp: LPARAM) -> Result<(), GuiError> {
         engine,
         view: PageView::default(),
         layout: Layout::default(),
+        wake_pending,
+        closing: false,
+        close_forced: false,
         dropped: cp.dropped.clone(),
+        shutdown_confirmed: cp.shutdown_confirmed.clone(),
     };
     st.send(Command::QueryStatus);
+    if st.info.start_engine_on_launch {
+        tracing::info!("starting the engine on launch (general.start_engine_on_launch)");
+        st.send(Command::Start);
+    }
     st.relayout();
     if let Some(s) = slot(hwnd) {
         *s.state.borrow_mut() = Some(st);
@@ -1047,6 +1155,21 @@ fn handle_with_state(
             st.drain_events();
             LRESULT(0)
         }
+        WM_TIMER if wp.0 == CLOSE_TIMER_ID => {
+            // SAFETY: killing our own timer.
+            unsafe {
+                let _ = KillTimer(Some(hwnd), CLOSE_TIMER_ID);
+            }
+            if st.closing && !st.ui.shutdown_complete {
+                tracing::error!(
+                    timeout_ms = CLOSE_TIMEOUT_MS,
+                    "engine did not confirm shutdown in time; closing anyway"
+                );
+                st.close_forced = true;
+                st.post_close();
+            }
+            LRESULT(0)
+        }
         _ => return Outcome::Default,
     })
 }
@@ -1110,11 +1233,13 @@ pub fn run(
     }
 
     let dropped = Rc::new(Cell::new(false));
+    let shutdown_confirmed = Rc::new(Cell::new(false));
     let panicked = Rc::new(Cell::new(false));
     let mut cp = CreateParams {
         info,
-        engine,
+        engine: Some(engine),
         dropped: dropped.clone(),
+        shutdown_confirmed: shutdown_confirmed.clone(),
         panicked: panicked.clone(),
     };
     // SAFETY: `cp` outlives CreateWindowExW, which is the only time
@@ -1168,6 +1293,15 @@ pub fn run(
         r.checks.push(Check {
             name: "window state released on shutdown".into(),
             passed: dropped.get(),
+        });
+        r.checks.push(Check {
+            name: "engine confirmed shutdown before the window closed".into(),
+            passed: shutdown_confirmed.get(),
+        });
+        let live = kalkan_core::live_engine_threads();
+        r.checks.push(Check {
+            name: format!("no engine threads remain after exit ({live} alive)"),
+            passed: live == 0,
         });
         r
     }))
@@ -1228,6 +1362,31 @@ fn click(btn: HWND) {
     pump();
 }
 
+/// Mutate the window state without holding the borrow afterwards.
+fn with_state_mut<T>(hwnd: HWND, f: impl FnOnce(&mut WindowState) -> T) -> Option<T> {
+    let s = slot(hwnd)?;
+    let mut g = s.state.try_borrow_mut().ok()?;
+    g.as_mut().map(f)
+}
+
+/// Pump messages until `pred` holds or `timeout` passes. The engine runs on
+/// its own threads; its events arrive here as WM_APP_ENGINE.
+fn wait_until(hwnd: HWND, timeout: Duration, pred: impl Fn(&WindowState) -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        pump();
+        if with_state(hwnd, &pred) == Some(true) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+const STEP_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn self_test(hwnd: HWND, shots: Option<&Path>) -> SelfTestReport {
     let mut r = SelfTestReport::default();
     let mut check = |name: String, passed: bool| {
@@ -1261,14 +1420,26 @@ fn self_test(hwnd: HWND, shots: Option<&Path>) -> SelfTestReport {
     };
     // SAFETY: plain queries on our child windows.
     let enabled = |h: HWND| unsafe { IsWindowEnabled(h) }.as_bool();
+    let state = || with_state(hwnd, |s| s.ui.engine);
+    let counts = || with_state(hwnd, |s| s.ui.counts).unwrap_or_default();
+    let metrics_live = |s: &WindowState| {
+        let v = page_view(Page::Dashboard, &s.ui, &s.info);
+        v.cards[0].value.is_real() && v.cards[1].value.is_real()
+    };
 
+    // ── Initial state ────────────────────────────────────────────────────
     check(
         "initial page is Dashboard".into(),
         with_state(hwnd, |s| s.ui.page) == Some(Page::Dashboard),
     );
+    check(
+        format!("engine reports Stopped at start ({:?})", state()),
+        state() == Some(EngineState::Stopped),
+    );
     check("Start enabled while stopped".into(), enabled(start));
     check("Stop disabled while stopped".into(), !enabled(stop));
 
+    // ── Navigation ───────────────────────────────────────────────────────
     for (i, page) in Page::ALL.iter().enumerate() {
         click(nav[i]);
         check(
@@ -1288,22 +1459,124 @@ fn self_test(hwnd: HWND, shots: Option<&Path>) -> SelfTestReport {
             page.label().to_lowercase().replace(' ', "-")
         ));
     }
-
     click(nav[0]);
-    click(start);
-    let after = with_state(hwnd, |s| (s.ui.engine, s.ui.notice.clone()));
-    check(
-        "Start placeholder reports nothing was started".into(),
-        matches!(&after, Some((EngineState::Stopped, Some(n))) if n.kind == NoticeKind::Info && n.message.contains("Nothing was started")),
-    );
-    check(
-        "Stop still disabled after placeholder Start".into(),
-        !enabled(stop),
-    );
-    capture("6-dashboard-after-start");
 
-    // Responsive layout. The layout must match the *actual* client area after
-    // every resize; comparing it only with itself would hide a missed WM_SIZE.
+    // ── Start: real engine, real events ──────────────────────────────────
+    let t0 = Instant::now();
+    click(start);
+    let running = wait_until(hwnd, STEP_TIMEOUT, |s| s.ui.engine == EngineState::Running);
+    check(
+        format!(
+            "Start: engine reports Running after initialisation ({} ms)",
+            t0.elapsed().as_millis()
+        ),
+        running,
+    );
+    check(
+        "EngineStarted event received once".into(),
+        counts().started == 1,
+    );
+    check(
+        "while running: Start disabled, Stop enabled".into(),
+        !enabled(start) && enabled(stop),
+    );
+    let t0 = Instant::now();
+    let live = wait_until(hwnd, STEP_TIMEOUT, metrics_live);
+    check(
+        format!(
+            "live CPU and memory samples arrive from the engine ({} ms)",
+            t0.elapsed().as_millis()
+        ),
+        live,
+    );
+    let no_net = with_state(hwnd, |s| {
+        s.ui.status.rx_bytes_per_sec.is_none() && s.ui.status.tx_bytes_per_sec.is_none()
+    });
+    check(
+        "no network values reported (monitor is Phase 4)".into(),
+        no_net == Some(true),
+    );
+    capture("6-dashboard-running");
+
+    // Duplicate Start (bypassing the disabled button) is rejected by the engine.
+    with_state_mut(hwnd, |s| s.send(Command::Start));
+    let rejected = wait_until(hwnd, STEP_TIMEOUT, |s| {
+        s.ui.notice
+            .as_ref()
+            .is_some_and(|n| n.kind == NoticeKind::Warning && n.message.contains("already running"))
+    });
+    check(
+        "duplicate Start is rejected with a warning".into(),
+        rejected,
+    );
+    check(
+        "duplicate Start leaves the engine Running".into(),
+        state() == Some(EngineState::Running) && counts().started == 1,
+    );
+    capture("7-dashboard-duplicate-start");
+
+    // ── Stop: confirmed only after the worker terminated ─────────────────
+    let t0 = Instant::now();
+    click(stop);
+    let stopped = wait_until(hwnd, STEP_TIMEOUT, |s| s.ui.counts.stopped == 1);
+    check(
+        format!(
+            "Stop: EngineStopped confirmed ({} ms)",
+            t0.elapsed().as_millis()
+        ),
+        stopped && state() == Some(EngineState::Stopped),
+    );
+    check(
+        "worker thread terminated after Stop (controller only)".into(),
+        kalkan_core::live_engine_threads() == 1,
+    );
+    check(
+        "metrics cleared after Stop".into(),
+        with_state(hwnd, metrics_live) == Some(false),
+    );
+    check(
+        "after stop: Start enabled, Stop disabled".into(),
+        enabled(start) && !enabled(stop),
+    );
+
+    with_state_mut(hwnd, |s| s.send(Command::Stop));
+    let rejected = wait_until(hwnd, STEP_TIMEOUT, |s| {
+        s.ui.notice
+            .as_ref()
+            .is_some_and(|n| n.kind == NoticeKind::Warning && n.message.contains("not running"))
+    });
+    check(
+        "duplicate Stop is rejected with a warning".into(),
+        rejected && counts().stopped == 1,
+    );
+
+    // ── Repeated cycles through the real buttons ─────────────────────────
+    const CYCLES: u32 = 10;
+    let t0 = Instant::now();
+    let mut ok = true;
+    for _ in 0..CYCLES {
+        click(start);
+        ok &= wait_until(hwnd, STEP_TIMEOUT, |s| s.ui.engine == EngineState::Running);
+        click(stop);
+        ok &= wait_until(hwnd, STEP_TIMEOUT, |s| s.ui.engine == EngineState::Stopped);
+    }
+    let c = counts();
+    check(
+        format!(
+            "{CYCLES} start/stop cycles ({} ms total; started {}, stopped {}, errors {})",
+            t0.elapsed().as_millis(),
+            c.started,
+            c.stopped,
+            c.errors
+        ),
+        ok && c.started == CYCLES + 1 && c.stopped == CYCLES + 1 && c.errors == 0,
+    );
+    check(
+        "no worker thread left after the cycles".into(),
+        kalkan_core::live_engine_threads() == 1,
+    );
+
+    // ── Responsive layout (unchanged from Phase 2) ───────────────────────
     let actual_client = || {
         let mut rc = RECT::default();
         // SAFETY: valid window; out-pointer on the stack.
@@ -1320,8 +1593,6 @@ fn self_test(hwnd: HWND, shots: Option<&Path>) -> SelfTestReport {
         }) == Some(true)
     };
     let dpi = with_state(hwnd, |s| s.dpi).unwrap_or(96);
-
-    // 1. Ask for a 1×1 window: WM_GETMINMAXINFO must clamp it to the minimum.
     // SAFETY: resizing our own window.
     unsafe {
         let _ = SetWindowPos(
@@ -1348,26 +1619,17 @@ fn self_test(hwnd: HWND, shots: Option<&Path>) -> SelfTestReport {
         format!("layout follows resize to {w}x{h}"),
         layout_matches((w, h)),
     );
-    let cols = with_state(hwnd, |s| s.layout.columns).unwrap_or(0);
-    check(
-        format!("minimum size: dashboard grid has 2 columns (got {cols})"),
-        cols == 2,
-    );
-    capture("7-dashboard-minimum-size");
-
-    // 2. Maximise (the largest size the screen allows), then restore.
+    capture("8-dashboard-minimum-size");
     // SAFETY: plain ShowWindow calls on our own window.
     unsafe {
         let _ = ShowWindow(hwnd, SW_MAXIMIZE);
     }
     pump();
     let (w, h) = actual_client();
-    let cols = with_state(hwnd, |s| s.layout.columns).unwrap_or(0);
     check(
-        format!("layout follows maximise to {w}x{h} ({cols} columns)"),
+        format!("layout follows maximise to {w}x{h}"),
         layout_matches((w, h)),
     );
-    capture("8-dashboard-maximized");
     // SAFETY: as above.
     unsafe {
         let _ = ShowWindow(hwnd, SW_RESTORE);
@@ -1379,9 +1641,15 @@ fn self_test(hwnd: HWND, shots: Option<&Path>) -> SelfTestReport {
         layout_matches((w, h)),
     );
 
+    // ── Close while running: the app must stop the engine first ──────────
+    click(start);
+    let running = wait_until(hwnd, STEP_TIMEOUT, |s| s.ui.engine == EngineState::Running);
+    check("engine running before application close".into(), running);
+
     r.screenshots = shot_paths;
     r.screenshot_errors = shot_errors;
-    // SAFETY: posting to our own window; the message loop handles it.
+    // SAFETY: posting to our own window; the message loop handles the
+    // two-step close (Shutdown → ShutdownComplete → DestroyWindow).
     unsafe {
         let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
     }

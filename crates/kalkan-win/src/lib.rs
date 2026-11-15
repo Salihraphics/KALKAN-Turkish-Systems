@@ -29,6 +29,12 @@ pub fn process_memory() -> Option<ProcessMemory> {
     imp::process_memory()
 }
 
+/// Total CPU time (user + kernel) consumed by this process so far.
+/// `None` if the query failed or the platform is not Windows.
+pub fn process_cpu_time() -> Option<std::time::Duration> {
+    imp::process_cpu_time()
+}
+
 /// Make `println!`/`eprintln!` reach the terminal that launched us.
 ///
 /// KALKAN is a GUI-subsystem program, so Windows gives it no console. When it
@@ -49,7 +55,7 @@ mod imp {
     use std::ffi::c_void;
     use std::mem::size_of;
 
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
     use windows::Win32::Security::{
         GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
     };
@@ -59,7 +65,7 @@ mod imp {
     use windows::Win32::System::ProcessStatus::{
         GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
     };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes, OpenProcessToken};
 
     use super::ProcessMemory;
 
@@ -122,6 +128,26 @@ mod imp {
         })
     }
 
+    pub fn process_cpu_time() -> Option<std::time::Duration> {
+        let (mut created, mut exited, mut kernel, mut user) = Default::default();
+        // SAFETY: four valid FILETIME out-pointers on the stack; the
+        // pseudo-handle from GetCurrentProcess needs no closing.
+        unsafe {
+            GetProcessTimes(
+                GetCurrentProcess(),
+                &mut created,
+                &mut exited,
+                &mut kernel,
+                &mut user,
+            )
+        }
+        .ok()?;
+        // FILETIME durations are in 100 ns units.
+        let ticks = |f: FILETIME| ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64;
+        let total = ticks(kernel) + ticks(user);
+        Some(std::time::Duration::from_nanos(total.saturating_mul(100)))
+    }
+
     pub fn attach_parent_console() {
         // SAFETY: plain queries/calls without pointers. A failed attach (no
         // parent console) is expected and ignored.
@@ -141,6 +167,9 @@ mod imp {
         None
     }
     pub fn process_memory() -> Option<super::ProcessMemory> {
+        None
+    }
+    pub fn process_cpu_time() -> Option<std::time::Duration> {
         None
     }
     pub fn attach_parent_console() {}
@@ -168,6 +197,20 @@ mod tests {
     fn process_memory_is_plausible() {
         let m = process_memory().expect("query should succeed on Windows");
         assert!(m.working_set > 0 && m.peak_working_set >= m.working_set);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn process_cpu_time_increases_with_work() {
+        let a = process_cpu_time().expect("query should succeed on Windows");
+        // Burn ~100 ms of CPU; Windows accounts CPU time in ~15.6 ms ticks.
+        let t0 = std::time::Instant::now();
+        let mut x = 0u64;
+        while t0.elapsed() < std::time::Duration::from_millis(100) {
+            x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(1));
+        }
+        let b = process_cpu_time().unwrap();
+        assert!(b > a, "cpu time did not increase: {a:?} -> {b:?}");
     }
 
     #[cfg(not(windows))]

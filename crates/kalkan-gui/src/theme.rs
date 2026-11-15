@@ -33,6 +33,7 @@ pub const DANGER: Rgb = Rgb(0xEF, 0x44, 0x44);
 pub const NEUTRAL: Rgb = Rgb(0x6B, 0x72, 0x80);
 pub const NOTICE_INFO_BG: Rgb = Rgb(0x17, 0x25, 0x3D);
 pub const NOTICE_ERROR_BG: Rgb = Rgb(0x3B, 0x17, 0x1A);
+pub const NOTICE_WARN_BG: Rgb = Rgb(0x33, 0x27, 0x10);
 
 // ── Metrics (DIP) ────────────────────────────────────────────────────────────
 pub const SIDEBAR_W: i32 = 208;
@@ -44,7 +45,7 @@ pub const PAD: i32 = 24;
 pub const GAP: i32 = 16;
 pub const HEADER_H: i32 = 64;
 pub const NOTICE_H: i32 = 40;
-pub const PANEL_H: i32 = 88;
+pub const PANEL_H: i32 = 100;
 pub const CARD_H: i32 = 112;
 pub const CARD_MIN_W: i32 = 200;
 pub const MAX_COLUMNS: usize = 4;

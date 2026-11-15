@@ -6,7 +6,7 @@
 //! when an [`EngineStatus`] from the engine contains the number. The GUI never
 //! invents data.
 
-use kalkan_core::{EngineState, EngineStatus, Event};
+use kalkan_core::{DiagLevel, EngineState, EngineStatus, Event};
 
 /// Navigation pages, in sidebar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -147,13 +147,18 @@ pub struct AppInfo {
     /// Display rows: (setting, value).
     pub settings: Vec<(String, String)>,
     pub log_level: String,
-    /// Shown in the engine panel while the engine is not implemented.
-    pub engine_note: Option<String>,
+    /// Full path of the log file in use, if logging goes to a file.
+    pub log_file: Option<String>,
+    /// Why there is no log file (e.g. disabled in the configuration).
+    pub log_note: String,
+    /// Send Start as soon as the window exists (`general.start_engine_on_launch`).
+    pub start_engine_on_launch: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeKind {
     Info,
+    Warning,
     Error,
 }
 
@@ -163,13 +168,26 @@ pub struct Notice {
     pub message: String,
 }
 
+/// How many lifecycle events the GUI has received (diagnostics and tests).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EventCounts {
+    pub started: u32,
+    pub stopped: u32,
+    pub errors: u32,
+    pub diagnostics: u32,
+}
+
 /// Mutable UI state. Changes only on user input or engine events.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiState {
     pub page: Page,
+    /// Last state reported by the engine. Never set by the GUI itself.
     pub engine: EngineState,
     pub status: EngineStatus,
     pub notice: Option<Notice>,
+    pub counts: EventCounts,
+    /// The engine confirmed shutdown (last event it will ever send).
+    pub shutdown_complete: bool,
 }
 
 impl Default for UiState {
@@ -179,6 +197,8 @@ impl Default for UiState {
             engine: EngineState::Stopped,
             status: EngineStatus::default(),
             notice: None,
+            counts: EventCounts::default(),
+            shutdown_complete: false,
         }
     }
 }
@@ -195,9 +215,41 @@ impl UiState {
     pub fn apply(&mut self, ev: Event) -> bool {
         match ev {
             Event::StateChanged { to, .. } => {
-                let changed = self.engine != to;
                 self.engine = to;
-                changed
+                self.status.state = Some(to);
+                if to != EngineState::Running {
+                    // Metrics describe a running engine only.
+                    self.status.cpu_percent = None;
+                    self.status.memory_bytes = None;
+                }
+                true
+            }
+            Event::EngineStarted => {
+                self.counts.started += 1;
+                self.notice = None;
+                true
+            }
+            Event::EngineStopped => {
+                self.counts.stopped += 1;
+                self.notice = None;
+                true
+            }
+            Event::EngineError { message } => {
+                self.counts.errors += 1;
+                self.notice = Some(Notice {
+                    kind: NoticeKind::Error,
+                    message,
+                });
+                true
+            }
+            Event::DiagnosticMessage { level, message } => {
+                self.counts.diagnostics += 1;
+                let kind = match level {
+                    DiagLevel::Info => NoticeKind::Info,
+                    DiagLevel::Warning => NoticeKind::Warning,
+                };
+                self.notice = Some(Notice { kind, message });
+                true
             }
             Event::Status(s) => {
                 if let Some(st) = s.state {
@@ -207,21 +259,10 @@ impl UiState {
                 self.status = s;
                 changed
             }
-            Event::Error { message } => {
-                self.notice = Some(Notice {
-                    kind: NoticeKind::Error,
-                    message,
-                });
-                true
+            Event::ShutdownComplete => {
+                self.shutdown_complete = true;
+                false
             }
-            Event::Info { message } => {
-                self.notice = Some(Notice {
-                    kind: NoticeKind::Info,
-                    message,
-                });
-                true
-            }
-            Event::ShutdownComplete => false,
         }
     }
 
@@ -245,7 +286,8 @@ pub struct PageView {
     pub note: Option<&'static str>,
 }
 
-const PHASE3_ENGINE: &str = "Measured by the engine (Phase 3)";
+const NEEDS_RUNNING: &str = "Measured while the engine is running";
+const FIRST_SAMPLE: &str = "Waiting for the first sample";
 const PHASE4_MONITOR: &str = "Requires the network monitor (Phase 4)";
 const PHASE5_LOGS: &str = "In-app log view arrives in Phase 5";
 
@@ -261,6 +303,11 @@ pub fn privilege_value(elevated: Option<bool>) -> Value {
 
 pub fn page_view(page: Page, ui: &UiState, info: &AppInfo) -> PageView {
     let s = &ui.status;
+    let metric_reason = if ui.engine == EngineState::Running {
+        FIRST_SAMPLE
+    } else {
+        NEEDS_RUNNING
+    };
     match page {
         Page::Dashboard => PageView {
             engine_panel: true,
@@ -269,7 +316,7 @@ pub fn page_view(page: Page, ui: &UiState, info: &AppInfo) -> PageView {
                     "CPU usage",
                     s.cpu_percent.map_or(
                         Value::Unavailable {
-                            reason: PHASE3_ENGINE,
+                            reason: metric_reason,
                         },
                         |p| Value::real(format!("{p:.1} %"), Source::Engine),
                     ),
@@ -279,7 +326,7 @@ pub fn page_view(page: Page, ui: &UiState, info: &AppInfo) -> PageView {
                     "Memory usage",
                     s.memory_bytes.map_or(
                         Value::Unavailable {
-                            reason: PHASE3_ENGINE,
+                            reason: metric_reason,
                         },
                         |b| Value::real(format_bytes(b), Source::Engine),
                     ),
@@ -386,17 +433,26 @@ pub fn page_view(page: Page, ui: &UiState, info: &AppInfo) -> PageView {
                     },
                     "",
                 ),
-                Card::new(
-                    "Log files",
-                    Value::Unavailable {
-                        reason: "File logging arrives in Phase 5",
+                match &info.log_file {
+                    Some(path) => Card::new(
+                        "Log file",
+                        Value::real(path.clone(), Source::System),
+                        info.log_note.clone(),
+                    ),
+                    // Keep the specific reason (e.g. disabled in the config).
+                    None => Card {
+                        title: "Log file",
+                        value: Value::Unavailable {
+                            reason: "No log file in use",
+                        },
+                        detail: info.log_note.clone(),
                     },
-                    "",
-                ),
+                },
             ],
             note: Some(
-                "In the GUI, log messages are not captured anywhere yet. Run KALKAN from a \
-                 terminal with --self-test or the CLI options to see diagnostic output.",
+                "The log file is a plain-text file that you can open in any editor. At start-up \
+                 a file over 5 MB is renamed to kalkan.log.old. Daily rotation and an in-app \
+                 viewer arrive in Phase 5.",
             ),
             ..PageView::default()
         },
@@ -530,9 +586,60 @@ mod tests {
 
     #[test]
     fn unavailable_cards_explain_why() {
-        let v = page_view(Page::Dashboard, &UiState::default(), &info());
-        assert_eq!(v.cards[0].detail, PHASE3_ENGINE);
+        let mut ui = UiState::default();
+        let v = page_view(Page::Dashboard, &ui, &info());
+        assert_eq!(v.cards[0].detail, NEEDS_RUNNING);
         assert_eq!(v.cards[0].value.badge(), "NOT AVAILABLE");
+        ui.apply(Event::StateChanged {
+            from: EngineState::Starting,
+            to: EngineState::Running,
+        });
+        let v = page_view(Page::Dashboard, &ui, &info());
+        assert_eq!(v.cards[0].detail, FIRST_SAMPLE);
+    }
+
+    #[test]
+    fn metrics_are_cleared_when_the_engine_leaves_running() {
+        let mut ui = UiState::default();
+        ui.apply(Event::Status(EngineStatus {
+            state: Some(EngineState::Running),
+            cpu_percent: Some(2.0),
+            memory_bytes: Some(1 << 20),
+            ..EngineStatus::default()
+        }));
+        assert!(page_view(Page::Dashboard, &ui, &info()).cards[1]
+            .value
+            .is_real());
+        for to in [EngineState::Stopping, EngineState::Failed] {
+            let mut u = ui.clone();
+            u.apply(Event::StateChanged {
+                from: EngineState::Running,
+                to,
+            });
+            let v = page_view(Page::Dashboard, &u, &info());
+            assert!(
+                !v.cards[0].value.is_real() && !v.cards[1].value.is_real(),
+                "{to}"
+            );
+        }
+    }
+
+    #[test]
+    fn log_file_card_shows_path_or_reason() {
+        let mut i = info();
+        i.log_file = Some("C:\\logs\\kalkan.log".into());
+        let v = page_view(Page::Logs, &UiState::default(), &i);
+        let card = v.cards.iter().find(|c| c.title == "Log file").unwrap();
+        assert_eq!(
+            card.value,
+            Value::real("C:\\logs\\kalkan.log", Source::System)
+        );
+        i.log_file = None;
+        i.log_note = "Disabled by logging.file_logging".into();
+        let v = page_view(Page::Logs, &UiState::default(), &i);
+        let card = v.cards.iter().find(|c| c.title == "Log file").unwrap();
+        assert!(!card.value.is_real());
+        assert_eq!(card.detail, "Disabled by logging.file_logging");
     }
 
     #[test]
@@ -545,13 +652,14 @@ mod tests {
     }
 
     #[test]
-    fn events_update_state_and_notices() {
+    fn events_update_state_notices_and_counts() {
         let mut ui = UiState::default();
-        assert!(ui.apply(Event::Info {
-            message: "hi".into()
+        assert!(ui.apply(Event::DiagnosticMessage {
+            level: DiagLevel::Warning,
+            message: "Start ignored".into()
         }));
-        assert_eq!(ui.notice.as_ref().unwrap().kind, NoticeKind::Info);
-        assert!(ui.apply(Event::Error {
+        assert_eq!(ui.notice.as_ref().unwrap().kind, NoticeKind::Warning);
+        assert!(ui.apply(Event::EngineError {
             message: "bad".into()
         }));
         assert_eq!(ui.notice.as_ref().unwrap().kind, NoticeKind::Error);
@@ -559,8 +667,40 @@ mod tests {
             from: EngineState::Stopped,
             to: EngineState::Starting
         }));
-        assert!(ui.can_stop() && !ui.can_start());
+        assert!(ui.can_stop() && !ui.can_start(), "Stop cancels a start");
+        assert!(ui.apply(Event::EngineStarted));
+        assert!(ui.notice.is_none(), "a successful start clears old notices");
+        ui.apply(Event::EngineStopped);
+        assert_eq!(
+            ui.counts,
+            EventCounts {
+                started: 1,
+                stopped: 1,
+                errors: 1,
+                diagnostics: 1
+            }
+        );
+        assert!(!ui.shutdown_complete);
         assert!(!ui.apply(Event::ShutdownComplete));
+        assert!(ui.shutdown_complete);
+    }
+
+    #[test]
+    fn button_affordances_follow_engine_state() {
+        let mut ui = UiState::default();
+        for (to, start, stop) in [
+            (EngineState::Starting, false, true),
+            (EngineState::Running, false, true),
+            (EngineState::Stopping, false, false),
+            (EngineState::Stopped, true, false),
+            (EngineState::Failed, true, false),
+        ] {
+            ui.apply(Event::StateChanged {
+                from: ui.engine,
+                to,
+            });
+            assert_eq!((ui.can_start(), ui.can_stop()), (start, stop), "{to}");
+        }
     }
 
     #[test]

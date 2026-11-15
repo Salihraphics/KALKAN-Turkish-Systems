@@ -1,19 +1,24 @@
 //! Engine lifecycle state machine.
 //!
 //! ```text
-//!            start()            started()
-//!  Stopped ──────────► Starting ──────────► Running
-//!     ▲                   │                    │
-//!     │                   │ fail()             │ stop()
-//!     │                   ▼                    ▼
-//!     │ reset()        Faulted ◄── fail() ── Stopping
-//!     └────────────────── │                    │
-//!     ▲                                        │ stopped()
-//!     └────────────────────────────────────────┘
+//!                  Start                 Started
+//!   ┌─► Stopped ─────────► Starting ─────────────► Running
+//!   │      ▲                 │   │                    │
+//!   │      │ Stopped         │   │ Stop               │ Stop
+//!   │      │                 │   ▼                    ▼
+//!   │      └─────────────────┼─ Stopping ◄────────────┘
+//!   │                        │   │
+//!   │                   Fail │   │ Fail          (Running ─Fail─► Failed too)
+//!   │                        ▼   ▼
+//!   └──────── Start ───── Failed
 //! ```
 //!
-//! `fail()` is accepted from `Starting`, `Running` and `Stopping`.
-//! `reset()` returns a faulted engine to `Stopped` once resources are released.
+//! * `Start` is accepted from `Stopped` and from `Failed` (retry).
+//! * `Started` is accepted only from `Starting`. This is the *only* way to
+//!   reach `Running`, so the engine never reports Running before its
+//!   initialisation succeeded.
+//! * `Stop` is accepted from `Starting` (abandon start-up) and `Running`.
+//! * `Fail` is accepted from `Starting`, `Running` and `Stopping`.
 
 use std::fmt;
 
@@ -24,13 +29,21 @@ pub enum EngineState {
     Starting,
     Running,
     Stopping,
-    Faulted,
+    Failed,
 }
 
 impl EngineState {
+    pub const ALL: [EngineState; 5] = [
+        EngineState::Stopped,
+        EngineState::Starting,
+        EngineState::Running,
+        EngineState::Stopping,
+        EngineState::Failed,
+    ];
+
     /// Whether a Start control should be enabled in the UI.
     pub fn can_start(self) -> bool {
-        matches!(self, EngineState::Stopped)
+        matches!(self, EngineState::Stopped | EngineState::Failed)
     }
 
     /// Whether a Stop control should be enabled in the UI.
@@ -50,7 +63,7 @@ impl EngineState {
             EngineState::Starting => "Starting",
             EngineState::Running => "Running",
             EngineState::Stopping => "Stopping",
-            EngineState::Faulted => "Error",
+            EngineState::Failed => "Failed",
         }
     }
 }
@@ -64,12 +77,26 @@ impl fmt::Display for EngineState {
 /// Lifecycle inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transition {
+    /// A start was requested.
     Start,
+    /// Initialisation succeeded.
     Started,
+    /// A stop was requested.
     Stop,
+    /// The worker has terminated after a stop.
     Stopped,
+    /// An error made the engine unusable.
     Fail,
-    Reset,
+}
+
+impl Transition {
+    pub const ALL: [Transition; 5] = [
+        Transition::Start,
+        Transition::Started,
+        Transition::Stop,
+        Transition::Stopped,
+        Transition::Fail,
+    ];
 }
 
 /// Returned when a transition is not legal from the current state.
@@ -85,13 +112,12 @@ pub fn next_state(from: EngineState, t: Transition) -> Result<EngineState, Trans
     use EngineState::*;
     use Transition as T;
     let to = match (from, t) {
-        (Stopped, T::Start) => Starting,
+        (Stopped | Failed, T::Start) => Starting,
         (Starting, T::Started) => Running,
         // Stop during start is allowed: start-up is abandoned and cleaned up.
         (Starting | Running, T::Stop) => Stopping,
         (Stopping, T::Stopped) => Stopped,
-        (Starting | Running | Stopping, T::Fail) => Faulted,
-        (Faulted, T::Reset) => Stopped,
+        (Starting | Running | Stopping, T::Fail) => Failed,
         _ => {
             return Err(TransitionError {
                 from,
@@ -141,8 +167,55 @@ mod tests {
     use EngineState::*;
     use Transition as T;
 
-    const ALL_STATES: [EngineState; 5] = [Stopped, Starting, Running, Stopping, Faulted];
-    const ALL_T: [Transition; 6] = [T::Start, T::Started, T::Stop, T::Stopped, T::Fail, T::Reset];
+    /// The complete table of legal transitions. Every other pair must fail.
+    const LEGAL: [(EngineState, Transition, EngineState); 9] = [
+        (Stopped, T::Start, Starting),
+        (Failed, T::Start, Starting),
+        (Starting, T::Started, Running),
+        (Starting, T::Stop, Stopping),
+        (Running, T::Stop, Stopping),
+        (Stopping, T::Stopped, Stopped),
+        (Starting, T::Fail, Failed),
+        (Running, T::Fail, Failed),
+        (Stopping, T::Fail, Failed),
+    ];
+
+    #[test]
+    fn every_valid_transition() {
+        for (from, t, to) in LEGAL {
+            assert_eq!(next_state(from, t), Ok(to), "{from} --{t:?}-->");
+        }
+    }
+
+    #[test]
+    fn every_invalid_transition_is_rejected() {
+        for from in EngineState::ALL {
+            for t in Transition::ALL {
+                let legal = LEGAL.iter().any(|&(f, tt, _)| f == from && tt == t);
+                assert_eq!(next_state(from, t).is_ok(), legal, "{from} --{t:?}-->");
+                if !legal {
+                    assert_eq!(
+                        next_state(from, t),
+                        Err(TransitionError {
+                            from,
+                            transition: t
+                        })
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn running_is_reachable_only_through_started() {
+        for from in EngineState::ALL {
+            for t in Transition::ALL {
+                if next_state(from, t) == Ok(Running) {
+                    assert_eq!((from, t), (Starting, T::Started));
+                }
+            }
+        }
+    }
 
     #[test]
     fn happy_path_start_stop() {
@@ -155,21 +228,16 @@ mod tests {
     }
 
     #[test]
-    fn failure_and_recovery() {
+    fn failure_then_retry() {
         let mut lc = Lifecycle::new();
         lc.apply(T::Start).unwrap();
         lc.apply(T::Fail).unwrap();
-        assert_eq!(lc.state(), Faulted);
-        assert!(lc.apply(T::Start).is_err(), "must reset before restarting");
-        lc.apply(T::Reset).unwrap();
-        assert_eq!(lc.state(), Stopped);
-    }
-
-    #[test]
-    fn stop_while_starting_is_allowed() {
-        let mut lc = Lifecycle::new();
-        lc.apply(T::Start).unwrap();
-        assert_eq!(lc.apply(T::Stop).unwrap(), (Starting, Stopping));
+        assert_eq!(lc.state(), Failed);
+        assert!(
+            lc.apply(T::Stop).is_err(),
+            "nothing to stop after a failure"
+        );
+        assert_eq!(lc.apply(T::Start).unwrap(), (Failed, Starting));
     }
 
     #[test]
@@ -181,20 +249,8 @@ mod tests {
     }
 
     #[test]
-    fn exhaustive_transition_table() {
-        // Count of legal (state, transition) pairs must match the documented diagram.
-        let legal = ALL_STATES
-            .iter()
-            .flat_map(|&s| ALL_T.iter().map(move |&t| (s, t)))
-            .filter(|&(s, t)| next_state(s, t).is_ok())
-            .count();
-        // Start, Started, Stop x2, Stopped, Fail x3, Reset
-        assert_eq!(legal, 9);
-    }
-
-    #[test]
     fn ui_affordances_match_transitions() {
-        for s in ALL_STATES {
+        for s in EngineState::ALL {
             assert_eq!(s.can_start(), next_state(s, T::Start).is_ok(), "{s}");
             assert_eq!(s.can_stop(), next_state(s, T::Stop).is_ok(), "{s}");
         }

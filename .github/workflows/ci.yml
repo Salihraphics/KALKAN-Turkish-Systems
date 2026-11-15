@@ -20,6 +20,16 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo build --release
+      - name: Engine tests repeated (race detection on Windows threads)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test -p kalkan-core --release --no-run
+          for ($i = 1; $i -le 25; $i++) {
+            cargo test -q -p kalkan-core --release
+            if ($LASTEXITCODE -ne 0) { throw "engine tests failed on repetition $i" }
+          }
+          Write-Host "engine tests: 25 repetitions passed"
       - name: Smoke test
         shell: pwsh
         run: |
@@ -44,7 +54,7 @@ jobs:
           Invoke-Kalkan 2 @('--screenshots', 'x')
       - name: GUI self-test (real window, scripted clicks, screenshots)
         shell: pwsh
-        timeout-minutes: 2
+        timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Stop'
           $p = Start-Process -FilePath ./target/release/kalkan.exe `
@@ -53,6 +63,15 @@ jobs:
                -RedirectStandardOutput selftest.txt -RedirectStandardError selftest-err.txt
           Get-Content selftest.txt, selftest-err.txt
           if ($p.ExitCode -ne 0) { throw "GUI self-test failed with exit code $($p.ExitCode)" }
+          # Repeat without screenshots to catch intermittent lifecycle bugs.
+          for ($i = 2; $i -le 3; $i++) {
+            $p = Start-Process -FilePath ./target/release/kalkan.exe `
+                 -ArgumentList @('--config', 'missing.toml', '--self-test') `
+                 -Wait -PassThru -NoNewWindow `
+                 -RedirectStandardOutput "selftest-$i.txt" -RedirectStandardError "selftest-err-$i.txt"
+            Select-String -Path "selftest-$i.txt" -Pattern '^result:'
+            if ($p.ExitCode -ne 0) { Get-Content "selftest-$i.txt"; throw "GUI self-test run $i failed" }
+          }
       - uses: actions/upload-artifact@v5
         if: always()
         with:

@@ -13,9 +13,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
 
 use kalkan_config::{AppDirs, Config};
 use kalkan_gui::{AppInfo, RunOptions};
+use kalkan_logging::Output;
 
 const USAGE: &str = "\
 KALKAN — Complex network technology. Simple user experience.
@@ -137,12 +140,13 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    if let Err(e) = kalkan_logging::init(config.logging.level) {
-        eprintln!("warning: {e}");
-    }
+    let log = init_logging(&args, &config);
+    kalkan_logging::install_panic_hook();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), platform = %kalkan_win::platform_description(), "KALKAN starting");
 
-    let info = app_info(&config, &config_path);
+    let mut info = app_info(&config, &config_path, &log);
+    // The self-test drives the engine itself and must start from Stopped.
+    info.start_engine_on_launch = config.general.start_engine_on_launch && !args.self_test;
     tracing::info!(elevated = ?info.elevated, config = %config_path.display(), "start-up information gathered");
 
     let opts = RunOptions {
@@ -150,8 +154,13 @@ fn main() -> ExitCode {
         self_test: args.self_test,
         screenshot_dir: args.screenshots.clone(),
     };
-    let engine = Box::new(kalkan_core::UnimplementedEngine::new());
+    let engine = match kalkan_core::EngineHandle::spawn(engine_spec(&config)) {
+        Ok(h) => Box::new(h),
+        Err(e) => return fail(&args, &format!("could not start the engine thread: {e}")),
+    };
 
+    // The GUI owns the engine; dropping it (when the window closes) joins the
+    // engine threads.
     match kalkan_gui::run(info, engine, opts) {
         Ok(None) => {
             tracing::info!("KALKAN exited cleanly");
@@ -177,8 +186,79 @@ fn yes_no(b: bool) -> String {
     if b { "Yes" } else { "No" }.to_owned()
 }
 
+/// Where log output goes, and what the Logs page says about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LogChoice {
+    output: Output,
+    note: String,
+}
+
+/// Console runs log to the terminal. GUI runs log to a file, because a
+/// GUI-subsystem process has no console and stderr would drop everything.
+fn choose_log_output(args: &Args, config: &Config, dirs: Option<&AppDirs>) -> LogChoice {
+    if args.is_console_run() {
+        return LogChoice {
+            output: Output::Stderr,
+            note: "Console run: messages go to the terminal".into(),
+        };
+    }
+    if !config.logging.file_logging {
+        return LogChoice {
+            output: Output::Stderr,
+            note: "Disabled by logging.file_logging in kalkan.toml".into(),
+        };
+    }
+    match dirs {
+        Some(d) => LogChoice {
+            output: Output::File(d.log_dir.join(kalkan_logging::LOG_FILE_NAME)),
+            note: "Renamed to kalkan.log.old when larger than 5 MB".into(),
+        },
+        None => LogChoice {
+            output: Output::Stderr,
+            note: "The log directory could not be determined".into(),
+        },
+    }
+}
+
+fn init_logging(args: &Args, config: &Config) -> LogChoice {
+    let mut choice = choose_log_output(args, config, AppDirs::from_env().as_ref());
+    if let Err(e) = kalkan_logging::init(config.logging.level, &choice.output) {
+        // Never lose this silently: fall back to stderr and say why.
+        let _ = kalkan_logging::init(config.logging.level, &Output::Stderr);
+        tracing::error!(%e, "file logging unavailable; using stderr");
+        choice = LogChoice {
+            output: Output::Stderr,
+            note: format!("Log file unavailable: {e}"),
+        };
+    }
+    choice
+}
+
+/// Real process metrics for the engine, read through Win32 calls.
+struct WinProcessProbe;
+
+impl kalkan_core::ProcessProbe for WinProcessProbe {
+    fn sample(&mut self) -> Result<kalkan_core::ProcessSample, String> {
+        let cpu_time = kalkan_win::process_cpu_time()
+            .ok_or("GetProcessTimes is not available on this platform or failed")?;
+        let memory = kalkan_win::process_memory()
+            .ok_or("GetProcessMemoryInfo is not available on this platform or failed")?;
+        Ok(kalkan_core::ProcessSample {
+            cpu_time,
+            memory_bytes: memory.working_set,
+        })
+    }
+}
+
+fn engine_spec(config: &Config) -> kalkan_core::EngineSpec {
+    kalkan_core::EngineSpec {
+        sample_interval: Duration::from_millis(config.monitor.sample_interval_ms.into()),
+        probe: Arc::new(|| Ok(Box::new(WinProcessProbe) as Box<dyn kalkan_core::ProcessProbe>)),
+    }
+}
+
 /// Gather the real start-up facts the GUI displays.
-fn app_info(config: &Config, config_path: &Path) -> AppInfo {
+fn app_info(config: &Config, config_path: &Path, log: &LogChoice) -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         platform: kalkan_win::platform_description(),
@@ -191,14 +271,11 @@ fn app_info(config: &Config, config_path: &Path) -> AppInfo {
                 yes_no(config.general.start_engine_on_launch),
             ),
             (
-                "Monitor sample interval".into(),
+                "Sample interval".into(),
                 format!("{} ms", config.monitor.sample_interval_ms),
             ),
             ("Log level".into(), config.logging.level.to_string()),
-            (
-                "File logging (Phase 5)".into(),
-                yes_no(config.logging.file_logging),
-            ),
+            ("File logging".into(), yes_no(config.logging.file_logging)),
             (
                 "Retained log files".into(),
                 config.logging.max_log_files.to_string(),
@@ -206,9 +283,12 @@ fn app_info(config: &Config, config_path: &Path) -> AppInfo {
             ("Start minimized".into(), yes_no(config.ui.start_minimized)),
         ],
         log_level: config.logging.level.to_string(),
-        engine_note: Some(
-            "The engine runner arrives in Phase 3. Start and Stop are placeholders.".to_owned(),
-        ),
+        log_file: match &log.output {
+            Output::File(p) => Some(p.display().to_string()),
+            Output::Stderr => None,
+        },
+        log_note: log.note.clone(),
+        start_engine_on_launch: config.general.start_engine_on_launch,
     }
 }
 
@@ -300,16 +380,70 @@ mod tests {
         assert!(args(&["--self-test", "--screenshots"]).is_err());
     }
 
+    fn stderr_choice() -> LogChoice {
+        LogChoice {
+            output: Output::Stderr,
+            note: "n".into(),
+        }
+    }
+
     #[test]
     fn app_info_reflects_config() {
         let mut c = Config::default();
         c.monitor.sample_interval_ms = 750;
-        let i = app_info(&c, Path::new("definitely-missing.toml"));
+        let i = app_info(&c, Path::new("definitely-missing.toml"), &stderr_choice());
         assert!(!i.config_file_exists);
         assert!(i
             .settings
             .iter()
-            .any(|(k, v)| k == "Monitor sample interval" && v == "750 ms"));
+            .any(|(k, v)| k == "Sample interval" && v == "750 ms"));
         assert_eq!(i.log_level, "info");
+        assert_eq!(i.log_file, None);
+        assert!(!i.start_engine_on_launch, "default is off");
+    }
+
+    #[test]
+    fn engine_spec_uses_configured_interval() {
+        let mut c = Config::default();
+        c.monitor.sample_interval_ms = 2500;
+        assert_eq!(engine_spec(&c).sample_interval, Duration::from_millis(2500));
+    }
+
+    #[test]
+    fn gui_runs_log_to_a_file_console_runs_to_stderr() {
+        let dirs = AppDirs {
+            config_dir: PathBuf::from("cfg"),
+            log_dir: PathBuf::from("logs"),
+        };
+        let c = Config::default();
+        let gui = choose_log_output(&args(&[]).unwrap(), &c, Some(&dirs));
+        assert_eq!(
+            gui.output,
+            Output::File(PathBuf::from("logs").join("kalkan.log"))
+        );
+        let cli = choose_log_output(&args(&["--self-test"]).unwrap(), &c, Some(&dirs));
+        assert_eq!(cli.output, Output::Stderr);
+        let mut off = Config::default();
+        off.logging.file_logging = false;
+        let disabled = choose_log_output(&args(&[]).unwrap(), &off, Some(&dirs));
+        assert_eq!(disabled.output, Output::Stderr);
+        assert!(disabled.note.contains("file_logging"));
+        assert_eq!(
+            choose_log_output(&args(&[]).unwrap(), &c, None).output,
+            Output::Stderr
+        );
+    }
+
+    #[test]
+    fn engine_starts_stopped_and_shuts_down_cleanly_from_the_app_spec() {
+        use kalkan_core::{Command, EngineLink, Event};
+        let mut h = kalkan_core::EngineHandle::spawn(engine_spec(&Config::default())).unwrap();
+        h.send(Command::QueryStatus);
+        let ev = h.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            matches!(ev, Event::Status(s) if s.state == Some(kalkan_core::EngineState::Stopped))
+        );
+        h.shutdown(Duration::from_secs(10)).unwrap();
+        assert_eq!(h.threads_alive(), 0);
     }
 }
