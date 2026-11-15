@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge&logo=rust" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?style=for-the-badge&logo=windows" />
   <img src="https://img.shields.io/badge/Architecture-Native-success?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Status-Phase%201%20of%207-yellow?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Status-Phase%202%20of%207-yellow?style=for-the-badge" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" />
 </p>
 
@@ -31,49 +31,71 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Project foundation and compilation | ✅ Done |
-| 2 | Native Win32 GUI | ⏳ Next |
-| 3 | Core engine lifecycle (threaded runner) | 🟡 Planned |
+| 2 | Native Win32 GUI | ✅ Done |
+| 3 | Core engine lifecycle (threaded runner) | ⏳ Next |
 | 4 | Read-only network monitoring | 🟡 Planned |
 | 5 | Logging (files, rotation, in-app view) and configuration UI | 🟡 Planned |
 | 6 | Performance benchmarking | 🟡 Planned |
 | 7 | DPI research and controlled integration planning | 🔬 Research |
 
-### What works today (Phase 1)
+### Screenshots
+
+Captured automatically by `kalkan --self-test` on the Windows CI runner at 96 DPI:
+
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" width="720" alt="KALKAN dashboard after pressing Start: a notice says the engine is not implemented yet and nothing was started" />
+</p>
+
+| Settings (real config values) | Minimum window size (760 × 560) |
+|---|---|
+| <img src="docs/screenshots/settings.png" width="400" alt="Settings page" /> | <img src="docs/screenshots/dashboard-minimum-size.png" width="300" alt="Dashboard at minimum size" /> |
+
+Values marked **NOT AVAILABLE** do not exist yet; KALKAN never shows invented numbers. **SYSTEM** and **CONFIG** values are real, read from Windows and from `kalkan.toml`.
+
+### What works today
 
 | Component | Status | Verified by |
 |---|---|---|
-| Cargo workspace, 7 crates, shared lints and release profile | ✅ | Builds on Linux and cross-compiles to `x86_64-pc-windows-gnu` |
+| Cargo workspace, 7 crates, shared lints and release profile | ✅ | CI on Windows (MSVC) and Linux (cross-compile to `x86_64-pc-windows-gnu`) |
 | Engine lifecycle state machine (`kalkan-core`) | ✅ | 6 unit tests, including an exhaustive transition table |
-| GUI ↔ engine `Command`/`Event` protocol (types) | ✅ | Compiles. It gets a runtime consumer in Phase 3 |
+| GUI ↔ engine protocol and `EngineLink`, with a stand-in engine that reports "nothing was started" | ✅ | 5 unit tests plus the GUI self-test |
 | TOML config: defaults, unknown-key rejection, range validation, atomic save | ✅ | 12 unit tests |
-| Logging initialisation (`tracing`, stderr) | ✅ | 2 unit tests plus a manual run |
-| Read-only `NetworkMonitor` trait, counter and rate math | ✅ | 7 unit tests (resets, saturation, ordering) |
-| Administrator-privilege detection (`kalkan-win`) | ✅ | Unit test and smoke test on the Windows CI runner (`windows-latest`) |
-| `kalkan` CLI: `--version`, `--config`, `--check-config`, `--print-default-config` | ✅ | 3 unit tests plus a manual smoke test |
-| Windows CI (MSVC build, clippy, tests, CLI smoke test with exit-code checks) | ✅ | GitHub Actions `windows-latest` |
+| Logging initialisation (`tracing`, stderr) | ✅ | 2 unit tests |
+| Read-only `NetworkMonitor` trait, counter and rate math | ✅ | 7 unit tests |
+| Administrator-privilege detection and process memory counters (`kalkan-win`) | ✅ | Unit tests on the Windows CI runner |
+| **Native Win32 GUI:** sidebar with the 5 pages, Start/Stop placeholders, responsive card grid, minimum size, per-monitor DPI | ✅ | 22 unit tests for the model, layout and theme, plus the 22-check `--self-test` on a real window on Windows CI |
+| Start-up errors shown in a dialog when started from Explorer | ⚠️ | Code path compiles. Not exercised by CI, because CI runs only console paths |
+| `kalkan` CLI: `--version`, `--config`, `--check-config`, `--print-default-config`, `--self-test` | ✅ | 6 unit tests plus the CI smoke test with exit-code checks |
 
-**Windows runtime coverage so far:** the Windows CI runner (`windows-latest`, Windows Server) ran the unit tests and the CLI smoke test. The app has not yet been run on a Windows 10 or 11 desktop machine.
+**Windows runtime coverage so far:** everything above marked ✅ ran on the GitHub Actions `windows-latest` runner (Windows Server, 1024×768, 96 DPI, elevated). The following have **not** been tested yet:
+- running on a Windows 10 or 11 desktop
+- high-DPI displays and `WM_DPICHANGED` (CI has only 96 DPI)
+- moving the window between monitors
+- screen readers
+
+**Memory, as observed once:** after the self-test run, the working set was 17.4 MiB (peak 20.6 MiB) and private bytes were 1.9 MiB. This is one observation on a CI runner, not a benchmark. Proper measurements are Phase 6.
 
 ### Not implemented yet
 
-- GUI window and pages (Dashboard, Network Monitoring, Statistics, Logs, Settings). Phase 1 runs as a console program.
-- Engine thread, Start/Stop, CPU and memory metrics.
-- Real network counters on Windows (`GetIfTable2`).
-- Log files and rotation, and the in-app log view.
-- System tray, gaming profile, benchmarks.
+- Engine thread and real Start/Stop (Phase 3). The buttons are placeholders and say so.
+- CPU and memory metrics on the Dashboard (Phase 3), and real network counters via `GetIfTable2` (Phase 4).
+- Log files, rotation and the in-app log view (Phase 5). **In GUI mode, log output is not captured anywhere yet.**
+- Editing settings in the app (Phase 5). The Settings page is read-only.
+- Hover effects, an application icon resource, scrolling, light theme, system tray, gaming profile and benchmarks.
 
 ## 🧠 Architecture
 
 ```
-kalkan-app ──► kalkan-gui ──► kalkan-core      (GUI only speaks Command/Event)
+kalkan-app ──► kalkan-gui ──► kalkan-core      (GUI only speaks EngineLink: Command/Event)
      │
      ├──► kalkan-net      read-only monitor trait (no packet modification API)
      ├──► kalkan-config   TOML + validation
      ├──► kalkan-logging  tracing
-     └──► kalkan-win      all Win32 FFI lives here
+     └──► kalkan-win      Windows queries (privileges, memory, console)
 ```
 
-See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full design, the lifecycle diagram, the threading model and the extension points.
+* **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: the full design, the lifecycle diagram, the threading model and the extension points.
+* **[docs/GUI.md](docs/GUI.md)**: GUI structure, layout, the rules that keep displayed data honest, and the self-test.
 
 ## 🔧 Building
 
@@ -97,13 +119,17 @@ cargo build --release --target x86_64-pc-windows-gnu
 
 Tests for the platform-independent crates run on any OS with `cargo test --workspace`.
 
-### Usage (Phase 1)
+### Usage
 
 ```text
+kalkan                                   # open the window
+kalkan --config my.toml                  # open the window with another config file
+kalkan --check-config                    # validate the config and exit
 kalkan --print-default-config > kalkan.toml
-kalkan --config kalkan.toml --check-config
-kalkan --version
+kalkan --self-test --screenshots shots   # scripted UI check (used by CI)
 ```
+
+`kalkan.exe` is a Windows GUI program. When you run CLI options from a terminal, it attaches to that terminal to print its output.
 
 By default the configuration lives at `%APPDATA%\Kalkan\kalkan.toml`. If the file is missing, defaults are used. If the file is invalid, KALKAN lists every problem and exits. It never overwrites your file.
 
@@ -111,7 +137,7 @@ By default the configuration lives at `%APPDATA%\Kalkan\kalkan.toml`. If the fil
 
 Performance is a requirement, not an afterthought:
 
-- No background polling while idle, and no async runtime unless it is justified.
+- No background polling while idle, and no async runtime unless it is justified. The GUI sleeps in `GetMessageW` and uses no timers.
 - Monitoring is read-only. It reads OS counters and does no packet processing.
 - Phase 6 will measure CPU, memory, latency and jitter. **We do not claim performance numbers until they are measured.**
 
@@ -121,7 +147,7 @@ Performance is a requirement, not an afterthought:
 - Antivirus and security software are never disabled.
 - No undocumented system modifications. No drivers are installed in Phases 1–6.
 - Administrator privileges are not required for monitoring, and the current privilege level is shown to the user.
-- `unsafe` code is confined to `kalkan-win`. Every other crate uses `#![forbid(unsafe_code)]`.
+- `unsafe` code is confined to `kalkan-win` and the GUI's `win32` module, and every block is documented with a `SAFETY:` comment. All other crates and modules forbid or deny `unsafe`.
 - Dependencies are small and well known: `windows`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`.
 
 ## 🤝 Contributing
