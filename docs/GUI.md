@@ -79,7 +79,7 @@ CPU, memory and network cards are `Real` only when an `EngineStatus` contains th
 
 ## Robustness
 
-* Window state lives in a `RefCell`. A message that arrives re-entrantly while the state is borrowed falls back to `DefWindowProcW`, so there is no aliasing.
+* Window state lives in a `RefCell`. A handler returns an `Outcome`, and the borrow is released **before** `DefWindowProcW` or `SetWindowPos` runs. Both re-enter the window procedure: `WM_WINDOWPOSCHANGING` triggers `WM_GETMINMAXINFO`, and `WM_WINDOWPOSCHANGED` triggers `WM_SIZE`. The first version held the borrow there and lost those messages. The CI screenshots exposed that.
 * `WM_CLOSE` releases the borrow before `DestroyWindow`, because `WM_NCDESTROY` frees the state.
 * Panics are caught at the window-procedure boundary. The window closes, and `run` returns `GuiError::Panicked` instead of unwinding into Windows.
 * If the config fails to load during a normal GUI start, a message box shows the problem. It is not printed to an invisible stderr.
@@ -91,7 +91,7 @@ The self-test runs on Windows CI against the real window:
 1. Checks the initial state: Dashboard is shown, Start is enabled, Stop is disabled.
 2. Sends `BM_CLICK` to each sidebar button, checks the page changed and the content fits, and saves a screenshot.
 3. Clicks Start and checks for the "Nothing was started" notice, that the state is still Stopped and that Stop is still disabled.
-4. Resizes to the minimum size and to a wide size, and checks the layout and card columns.
+4. Requests a 1×1 window and checks that the minimum size is enforced. Then maximises and restores. After each resize it checks that the layout matches the **actual** client rectangle, so a missed `WM_SIZE` cannot pass, and that the minimum-size grid has 2 columns.
 5. Closes the window and checks that the message loop exits with 0 and the window state was released.
 
 Screenshots are uploaded as the `gui-screenshots` CI artifact.
