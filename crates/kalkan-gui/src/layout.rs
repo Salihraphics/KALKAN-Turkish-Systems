@@ -77,7 +77,14 @@ pub fn columns_for(content_w: i32, cards: usize, dpi: u32) -> usize {
     let min_w = scale(theme::CARD_MIN_W, dpi);
     let gap = scale(theme::GAP, dpi);
     let fit = ((content_w + gap) / (min_w + gap)).max(1) as usize;
-    fit.min(theme::MAX_COLUMNS).min(cards)
+    let mut cols = fit.min(theme::MAX_COLUMNS).min(cards);
+    // Balance the grid: use the fewest columns that need the same number of
+    // rows (4 cards in 3 columns → 2×2 instead of 3 + 1).
+    let rows = cards.div_ceil(cols);
+    while cols > 1 && cards.div_ceil(cols - 1) == rows {
+        cols -= 1;
+    }
+    cols
 }
 
 pub fn compute(client_w: i32, client_h: i32, dpi: u32, c: Content) -> Layout {
@@ -251,6 +258,16 @@ mod tests {
         assert_eq!(columns_for(2000, 4, 96), 4);
         assert_eq!(columns_for(2000, 2, 96), 2, "never more columns than cards");
         assert_eq!(columns_for(2000, 0, 96), 0);
+    }
+
+    #[test]
+    fn grid_is_balanced() {
+        // Room for 3 columns: 4 cards → 2×2, 3 cards → 1×3, 5 cards → 3+2.
+        let w3 = 3 * theme::CARD_MIN_W + 2 * theme::GAP;
+        assert_eq!(columns_for(w3, 4, 96), 2);
+        assert_eq!(columns_for(w3, 3, 96), 3);
+        assert_eq!(columns_for(w3, 5, 96), 3);
+        assert_eq!(columns_for(w3, 1, 96), 1);
     }
 
     #[test]

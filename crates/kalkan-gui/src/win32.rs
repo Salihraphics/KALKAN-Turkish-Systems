@@ -22,12 +22,12 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontIndirectW, CreatePen,
-    CreateSolidBrush, DeleteDC, DeleteObject, DrawFocusRect, DrawTextW, Ellipse, EndPaint,
-    FillRect, GetDC, GetDIBits, GetStockObject, Polygon, RedrawWindow, ReleaseDC, RoundRect,
-    SelectObject, SetBkMode, SetTextColor, UpdateWindow, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    CLEARTYPE_QUALITY, DEFAULT_CHARSET, DIB_RGB_COLORS, DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER,
-    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK,
-    FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HGDIOBJ, LOGFONTW, NULL_PEN, PAINTSTRUCT, PS_SOLID,
+    CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect, GetDC,
+    GetDIBits, GetStockObject, Polygon, RedrawWindow, ReleaseDC, RoundRect, SelectObject,
+    SetBkMode, SetTextColor, UpdateWindow, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLEARTYPE_QUALITY,
+    DEFAULT_CHARSET, DIB_RGB_COLORS, DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS,
+    DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_NORMAL,
+    FW_SEMIBOLD, HBRUSH, HDC, HGDIOBJ, LOGFONTW, NULL_BRUSH, NULL_PEN, PAINTSTRUCT, PS_SOLID,
     RDW_ALLCHILDREN, RDW_INVALIDATE, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
@@ -46,11 +46,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetWindowLongPtrW, SetWindowPos,
     ShowWindow, TranslateMessage, BM_CLICK, BS_OWNERDRAW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
     CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW, MB_ICONERROR, MB_OK, MINMAXINFO, MSG,
-    PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWMINNOACTIVE,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY,
-    WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_NCCREATE, WM_NCDESTROY,
-    WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
-    WS_VISIBLE,
+    PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_HIDE, SW_MAXIMIZE, SW_RESTORE, SW_SHOW,
+    SW_SHOWMINNOACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE,
+    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_NCCREATE,
+    WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
+    WS_TABSTOP, WS_VISIBLE,
 };
 
 use kalkan_core::{Command, EngineLink, EngineState};
@@ -199,6 +199,29 @@ impl Painter<'_> {
             let old_b = SelectObject(self.hdc, b.0);
             let old_p = SelectObject(self.hdc, p.0);
             let _ = RoundRect(self.hdc, r.x, r.y, r.right(), r.bottom(), d, d);
+            SelectObject(self.hdc, old_p);
+            SelectObject(self.hdc, old_b);
+        }
+    }
+
+    /// Unfilled rounded outline (keyboard focus indicator), 2 px wide.
+    fn ring(&self, r: Rect, c: Rgb, radius: i32) {
+        // SAFETY: plain pen creation.
+        let pen = Gdi(unsafe { CreatePen(PS_SOLID, self.s(2), COLORREF(c.colorref())) }.into());
+        let d = self.s(radius) * 2;
+        // SAFETY: valid DC; selections restored before the pen drops.
+        unsafe {
+            let old_b = SelectObject(self.hdc, GetStockObject(NULL_BRUSH));
+            let old_p = SelectObject(self.hdc, pen.0);
+            let _ = RoundRect(
+                self.hdc,
+                r.x + 1,
+                r.y + 1,
+                r.right() - 1,
+                r.bottom() - 1,
+                d,
+                d,
+            );
             SelectObject(self.hdc, old_p);
             SelectObject(self.hdc, old_b);
         }
@@ -687,10 +710,7 @@ impl WindowState {
                 fg,
             );
             if focus {
-                // SAFETY: valid DC from DRAWITEMSTRUCT; RECT on the stack.
-                unsafe {
-                    let _ = DrawFocusRect(dis.hDC, &to_rect(pill.inset(p.s(2))));
-                }
+                p.ring(pill, theme::ACCENT, 8);
             }
             return;
         }
@@ -721,10 +741,7 @@ impl WindowState {
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
         );
         if focus {
-            // SAFETY: valid DC from DRAWITEMSTRUCT; RECT on the stack.
-            unsafe {
-                let _ = DrawFocusRect(dis.hDC, &to_rect(r.inset(p.s(3))));
-            }
+            p.ring(r.inset(p.s(2)), Rgb(0xFF, 0xFF, 0xFF), 6);
         }
     }
 }
@@ -834,7 +851,32 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             let Some(st) = guard.as_mut() else {
                 return def(hwnd, msg, wp, lp);
             };
-            handle_with_state(st, hwnd, msg, wp, lp)
+            let outcome = handle_with_state(st, hwnd, msg, wp, lp);
+            // Release the borrow BEFORE anything that can re-enter this
+            // procedure. DefWindowProcW does: e.g. WM_WINDOWPOSCHANGING sends
+            // WM_GETMINMAXINFO, and WM_WINDOWPOSCHANGED sends WM_SIZE. Both
+            // must see the state, or minimum size and re-layout are lost.
+            drop(guard);
+            match outcome {
+                Outcome::Done(r) => r,
+                Outcome::Default => def(hwnd, msg, wp, lp),
+                Outcome::MoveTo(r) => {
+                    // SAFETY: valid window handle; no borrows are held, so the
+                    // WM_SIZE this triggers re-lays out normally.
+                    unsafe {
+                        let _ = SetWindowPos(
+                            hwnd,
+                            None,
+                            r.left,
+                            r.top,
+                            r.right - r.left,
+                            r.bottom - r.top,
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                    }
+                    LRESULT(0)
+                }
+            }
         }
     }
 }
@@ -916,14 +958,24 @@ fn on_create(hwnd: HWND, lp: LPARAM) -> Result<(), GuiError> {
     Ok(())
 }
 
+/// Result of handling a message while the window state is borrowed. Anything
+/// that may re-enter the window procedure runs after the borrow is released.
+enum Outcome {
+    Done(LRESULT),
+    /// Forward to `DefWindowProcW`.
+    Default,
+    /// Move/resize the window to this rectangle, then return 0.
+    MoveTo(RECT),
+}
+
 fn handle_with_state(
     st: &mut WindowState,
     hwnd: HWND,
     msg: u32,
     wp: WPARAM,
     lp: LPARAM,
-) -> LRESULT {
-    match msg {
+) -> Outcome {
+    Outcome::Done(match msg {
         WM_ERASEBKGND => LRESULT(1), // everything is painted in WM_PAINT
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
@@ -977,23 +1029,9 @@ fn handle_with_state(
             st.on_dpi_changed(loword(wp.0) as u32);
             // SAFETY: lParam points to the suggested RECT for this message.
             let r = unsafe { *(lp.0 as *const RECT) };
-            // Release the borrow-sensitive work: SetWindowPos sends WM_SIZE
-            // synchronously, which would find the state borrowed. Re-layout
-            // here explicitly instead.
-            // SAFETY: valid window handle.
-            unsafe {
-                let _ = SetWindowPos(
-                    hwnd,
-                    None,
-                    r.left,
-                    r.top,
-                    r.right - r.left,
-                    r.bottom - r.top,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-            }
-            st.relayout();
-            LRESULT(0)
+            // The resize (and the WM_SIZE re-layout it triggers) happens after
+            // the borrow is released.
+            return Outcome::MoveTo(r);
         }
         WM_DRAWITEM => {
             // SAFETY: lParam points to a DRAWITEMSTRUCT for this message.
@@ -1009,8 +1047,8 @@ fn handle_with_state(
             st.drain_events();
             LRESULT(0)
         }
-        _ => def(hwnd, msg, wp, lp),
-    }
+        _ => return Outcome::Default,
+    })
 }
 
 // ── Entry points ─────────────────────────────────────────────────────────────
@@ -1264,37 +1302,82 @@ fn self_test(hwnd: HWND, shots: Option<&Path>) -> SelfTestReport {
     );
     capture("6-dashboard-after-start");
 
-    // Responsive layout: shrink to the minimum, then grow wide.
-    for (name, w, h) in [
-        ("7-dashboard-minimum-size", 1, 1),
-        ("8-dashboard-wide", 1700, 900),
-    ] {
-        let dpi = with_state(hwnd, |s| s.dpi).unwrap_or(96);
-        // SAFETY: resizing our own window; WM_GETMINMAXINFO clamps to the minimum.
-        unsafe {
-            let _ = SetWindowPos(
-                hwnd,
-                None,
-                0,
-                0,
-                scale(w, dpi),
-                scale(h, dpi),
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-        }
-        pump();
-        let ok = with_state(hwnd, |s| {
+    // Responsive layout. The layout must match the *actual* client area after
+    // every resize; comparing it only with itself would hide a missed WM_SIZE.
+    let actual_client = || {
+        let mut rc = RECT::default();
+        // SAFETY: valid window; out-pointer on the stack.
+        let _ = unsafe { GetClientRect(hwnd, &mut rc) };
+        (rc.right - rc.left, rc.bottom - rc.top)
+    };
+    let layout_matches = |(w, h): (i32, i32)| {
+        with_state(hwnd, |s| {
             let l = &s.layout;
-            l.content_bottom() <= l.client.bottom()
+            l.client.w == w
+                && l.client.h == h
+                && l.content_bottom() <= l.client.bottom()
                 && l.cards.iter().all(|c| c.right() <= l.client.right())
-        });
-        let cols = with_state(hwnd, |s| s.layout.columns).unwrap_or(0);
-        check(
-            format!("{name}: content fits ({cols} card columns)"),
-            ok == Some(true),
+        }) == Some(true)
+    };
+    let dpi = with_state(hwnd, |s| s.dpi).unwrap_or(96);
+
+    // 1. Ask for a 1×1 window: WM_GETMINMAXINFO must clamp it to the minimum.
+    // SAFETY: resizing our own window.
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            1,
+            1,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
-        capture(name);
     }
+    pump();
+    let (w, h) = actual_client();
+    let (min_w, min_h) = (
+        scale(theme::MIN_CLIENT_W, dpi),
+        scale(theme::MIN_CLIENT_H, dpi),
+    );
+    check(
+        format!("minimum size enforced (client {w}x{h}, minimum {min_w}x{min_h})"),
+        w >= min_w && h >= min_h,
+    );
+    check(
+        format!("layout follows resize to {w}x{h}"),
+        layout_matches((w, h)),
+    );
+    let cols = with_state(hwnd, |s| s.layout.columns).unwrap_or(0);
+    check(
+        format!("minimum size: dashboard grid has 2 columns (got {cols})"),
+        cols == 2,
+    );
+    capture("7-dashboard-minimum-size");
+
+    // 2. Maximise (the largest size the screen allows), then restore.
+    // SAFETY: plain ShowWindow calls on our own window.
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+    }
+    pump();
+    let (w, h) = actual_client();
+    let cols = with_state(hwnd, |s| s.layout.columns).unwrap_or(0);
+    check(
+        format!("layout follows maximise to {w}x{h} ({cols} columns)"),
+        layout_matches((w, h)),
+    );
+    capture("8-dashboard-maximized");
+    // SAFETY: as above.
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+    }
+    pump();
+    let (w, h) = actual_client();
+    check(
+        format!("layout follows restore to {w}x{h}"),
+        layout_matches((w, h)),
+    );
 
     r.screenshots = shot_paths;
     r.screenshot_errors = shot_errors;
