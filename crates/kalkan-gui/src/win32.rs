@@ -639,9 +639,16 @@ impl WindowState {
                 &self.fonts.value,
                 theme::TEXT,
             );
+            // The scope line sits below the buttons, so it may use the full
+            // panel width: this disclaimer must stay readable at any size.
             p.line(
                 ENGINE_SCOPE,
-                Rect::new(r.x + s(20), r.y + s(72), text_w, s(20)),
+                Rect::new(
+                    r.x + s(20),
+                    r.y + s(theme::PANEL_SCOPE_Y),
+                    (r.w - s(40)).max(0),
+                    s(20),
+                ),
                 &self.fonts.small,
                 theme::TEXT_MUTED,
             );

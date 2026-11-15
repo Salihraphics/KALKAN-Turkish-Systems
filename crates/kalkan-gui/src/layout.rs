@@ -323,6 +323,26 @@ mod tests {
     }
 
     #[test]
+    fn buttons_end_above_the_full_width_scope_line() {
+        for dpi in [96, 120, 144, 192] {
+            let l = compute(
+                scale(MIN_CLIENT_W, dpi),
+                scale(MIN_CLIENT_H, dpi),
+                dpi,
+                DASH,
+            );
+            let p = l.engine_panel.unwrap();
+            let scope_top = p.y + scale(theme::PANEL_SCOPE_Y, dpi);
+            assert!(l.start_btn.unwrap().bottom() <= scope_top, "dpi {dpi}");
+            assert!(l.stop_btn.unwrap().bottom() <= scope_top, "dpi {dpi}");
+            assert!(
+                scope_top + scale(20, dpi) <= p.bottom(),
+                "scope line inside panel"
+            );
+        }
+    }
+
+    #[test]
     fn layout_scales_with_dpi() {
         let a = compute(1000, 600, 96, DASH);
         let b = compute(2000, 1200, 192, DASH);

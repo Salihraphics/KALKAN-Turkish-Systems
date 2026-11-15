@@ -46,6 +46,8 @@ pub const GAP: i32 = 16;
 pub const HEADER_H: i32 = 64;
 pub const NOTICE_H: i32 = 40;
 pub const PANEL_H: i32 = 100;
+/// Engine panel: top of the full-width scope line, below the buttons.
+pub const PANEL_SCOPE_Y: i32 = 72;
 pub const CARD_H: i32 = 112;
 pub const CARD_MIN_W: i32 = 200;
 pub const MAX_COLUMNS: usize = 4;
