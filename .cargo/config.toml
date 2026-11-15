@@ -1,0 +1,4 @@
+# Cross-compiling from Linux/macOS to Windows (GNU ABI) uses the mingw-w64 linker.
+# Native Windows builds use the MSVC target and need no configuration here.
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"

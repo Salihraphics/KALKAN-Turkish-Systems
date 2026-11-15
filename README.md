@@ -1,135 +1,140 @@
-🛡️ KALKAN
+# 🛡️ KALKAN
 
-Complex network technology. Simple user experience.
+**Complex network technology. Simple user experience.**
 
 <p align="center">
   <img src="https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge&logo=rust" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?style=for-the-badge&logo=windows" />
   <img src="https://img.shields.io/badge/Architecture-Native-success?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Status-Early%20Development-yellow?style=for-the-badge" />
-</p><p align="center">
-  <b>Lightweight. Native. Reliable.</b>
-</p>---
-
-⚡ What is KALKAN?
-
-KALKAN is an open-source Windows network utility built with Rust, focused on delivering a lightweight, reliable, and user-friendly networking experience.
-
-Inspired by the usability challenges of existing network tools, KALKAN aims to simplify complex networking operations through a clean native interface and an efficient background engine.
-
-Our goal is simple:
-
-«Make advanced network technology accessible without making the user deal with unnecessary complexity.»
-
-🎯 Our Vision
-
-We believe network utilities should be:
-
-- 🪶 Lightweight — Minimal RAM and CPU consumption.
-- ⚡ Fast — Efficient network processing with minimal overhead.
-- 🖥️ Native — Designed specifically for Windows.
-- 🎮 Gaming-friendly — Built with latency and system performance in mind.
-- 🔒 Reliable — No unnecessary system modifications or hidden processes.
-- 🎛️ Simple — One interface, clear controls, no confusing configuration files.
-
-🧩 Planned Features
-
-Feature| Status
-Native Windows interface| 🟡 Planned
-Rust Core Engine| 🟡 Planned
-Start / Stop management| 🟡 Planned
-Real-time network monitoring| 🟡 Planned
-CPU & RAM monitoring| 🟡 Planned
-System tray integration| 🟡 Planned
-Gaming-focused profile| 🟡 Planned
-Advanced network modules| 🔬 Research
-DPI compatibility research| 🔬 Research
-
-Features are subject to development and testing.
-
-🏗️ Technology Stack
-
-Technology| Purpose
-🦀 Rust| Core engine
-🪟 Win32 API| Native Windows interface
-🔧 windows-rs| Windows API integration
-📦 Cargo| Build system
-📋 TOML| Configuration
-📊 tracing| Logging and diagnostics
-
-KALKAN is designed around a modular architecture, keeping the user interface independent from the network engine.
-
-🧠 Architecture
-
-KALKAN
-│
-├── GUI
-│   └── Native Windows Interface
-│
-├── CORE
-│   ├── Engine Manager
-│   ├── State Management
-│   └── Error Handling
-│
-├── NETWORK
-│   ├── Network Monitor
-│   └── Diagnostics
-│
-├── CONFIG
-│   └── Settings Manager
-│
-└── LOGS
-    └── Diagnostic System
-
-🎮 Gaming First
-
-Gaming performance is an important design consideration.
-
-KALKAN aims to minimize unnecessary background activity and network processing overhead.
-
-Our performance goals include:
-
-- Minimal CPU overhead.
-- Low memory consumption.
-- No unnecessary packet processing.
-- Stable network behavior.
-- Measurable latency and jitter performance.
-
-We don't promise zero latency overhead without testing. We measure, optimize, and verify.
-
-🔐 Security & Transparency
-
-Security and reliability are core principles.
-
-- No hidden background processes.
-- No automatic antivirus disabling.
-- Explicit system permission requirements.
-- Transparent logging.
-- Documented dependencies.
-- Safe shutdown and cleanup.
-
-🚧 Development Status
-
-KALKAN is currently in early development.
-
-The initial development phase focuses on the native Windows interface, Rust core architecture, lifecycle management, and read-only network monitoring.
-
-Advanced network functionality will be researched and integrated separately after proper testing.
-
-🤝 Contributing
-
-Contributions, suggestions, bug reports, and technical discussions are welcome.
-
-Please check the project issues before submitting major changes.
-
-📜 License
-
-License: To be determined.
-
-🛡️ KALKAN
-
-Complex network technology. Simple user experience.
-
-<p align="center">
-  Built with 🦀 Rust
+  <img src="https://img.shields.io/badge/Status-Phase%201%20of%207-yellow?style=for-the-badge" />
 </p>
+
+<p align="center"><b>Lightweight. Native. Reliable.</b></p>
+
+---
+
+## ⚡ What is KALKAN?
+
+KALKAN is an open-source Windows network utility written in Rust. It aims to be lightweight, reliable and easy to use.
+
+Existing network tools are often hard to use. KALKAN puts complex networking operations behind a clean native interface and an efficient background engine.
+
+> Make advanced network technology accessible without making the user deal with unnecessary complexity.
+
+KALKAN is **not** a GUI wrapper around GoodbyeDPI or any other tool. It is an independent application.
+
+## 🚧 Development status
+
+KALKAN is built in phases. A feature is marked ✅ only after it has been compiled and tested.
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | Project foundation and compilation | ✅ Done |
+| 2 | Native Win32 GUI | ⏳ Next |
+| 3 | Core engine lifecycle (threaded runner) | 🟡 Planned |
+| 4 | Read-only network monitoring | 🟡 Planned |
+| 5 | Logging (files, rotation, in-app view) and configuration UI | 🟡 Planned |
+| 6 | Performance benchmarking | 🟡 Planned |
+| 7 | DPI research and controlled integration planning | 🔬 Research |
+
+### What works today (Phase 1)
+
+| Component | Status | Verified by |
+|---|---|---|
+| Cargo workspace, 7 crates, shared lints and release profile | ✅ | Builds on Linux and cross-compiles to `x86_64-pc-windows-gnu` |
+| Engine lifecycle state machine (`kalkan-core`) | ✅ | 6 unit tests, including an exhaustive transition table |
+| GUI ↔ engine `Command`/`Event` protocol (types) | ✅ | Compiles. It gets a runtime consumer in Phase 3 |
+| TOML config: defaults, unknown-key rejection, range validation, atomic save | ✅ | 12 unit tests |
+| Logging initialisation (`tracing`, stderr) | ✅ | 2 unit tests plus a manual run |
+| Read-only `NetworkMonitor` trait, counter and rate math | ✅ | 7 unit tests (resets, saturation, ordering) |
+| Administrator-privilege detection (`kalkan-win`) | ⚠️ | Cross-compiles for Windows. The runtime test runs only on Windows CI |
+| `kalkan` CLI: `--version`, `--config`, `--check-config`, `--print-default-config` | ✅ | 3 unit tests plus a manual smoke test |
+| Windows CI (MSVC build, clippy, tests, smoke test) | ⚠️ | Workflow written but not yet run on GitHub |
+
+### Not implemented yet
+
+- GUI window and pages (Dashboard, Network Monitoring, Statistics, Logs, Settings). Phase 1 runs as a console program.
+- Engine thread, Start/Stop, CPU and memory metrics.
+- Real network counters on Windows (`GetIfTable2`).
+- Log files and rotation, and the in-app log view.
+- System tray, gaming profile, benchmarks.
+
+## 🧠 Architecture
+
+```
+kalkan-app ──► kalkan-gui ──► kalkan-core      (GUI only speaks Command/Event)
+     │
+     ├──► kalkan-net      read-only monitor trait (no packet modification API)
+     ├──► kalkan-config   TOML + validation
+     ├──► kalkan-logging  tracing
+     └──► kalkan-win      all Win32 FFI lives here
+```
+
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full design, the lifecycle diagram, the threading model and the extension points.
+
+## 🔧 Building
+
+### On Windows (recommended)
+
+Requirements: [Rust](https://rustup.rs) stable (1.80+) with the MSVC toolchain and the Visual Studio C++ Build Tools.
+
+```powershell
+cargo build --release          # -> target\release\kalkan.exe
+cargo test --workspace
+```
+
+### Cross-compiling from Linux
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+sudo apt-get install gcc-mingw-w64-x86-64
+cargo build --release --target x86_64-pc-windows-gnu
+# -> target/x86_64-pc-windows-gnu/release/kalkan.exe
+```
+
+Tests for the platform-independent crates run on any OS with `cargo test --workspace`.
+
+### Usage (Phase 1)
+
+```text
+kalkan --print-default-config > kalkan.toml
+kalkan --config kalkan.toml --check-config
+kalkan --version
+```
+
+By default the configuration lives at `%APPDATA%\Kalkan\kalkan.toml`. If the file is missing, defaults are used. If the file is invalid, KALKAN lists every problem and exits. It never overwrites your file.
+
+## 🎮 Gaming first
+
+Performance is a requirement, not an afterthought:
+
+- No background polling while idle, and no async runtime unless it is justified.
+- Monitoring is read-only. It reads OS counters and does no packet processing.
+- Phase 6 will measure CPU, memory, latency and jitter. **We do not claim performance numbers until they are measured.**
+
+## 🔐 Security and transparency
+
+- No hidden background processes. Nothing starts without a user action (`start_engine_on_launch = false` by default).
+- Antivirus and security software are never disabled.
+- No undocumented system modifications. No drivers are installed in Phases 1–6.
+- Administrator privileges are not required for monitoring, and the current privilege level is shown to the user.
+- `unsafe` code is confined to `kalkan-win`. Every other crate uses `#![forbid(unsafe_code)]`.
+- Dependencies are small and well known: `windows`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`.
+
+## 🤝 Contributing
+
+Contributions, suggestions, bug reports and technical discussions are welcome. Please check the project issues before submitting major changes.
+
+Before you open a PR, run:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+## 📜 License
+
+License: to be determined.
+
+<p align="center">Built with 🦀 Rust</p>

@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kalkan-core",
+    "crates/kalkan-config",
+    "crates/kalkan-logging",
+    "crates/kalkan-net",
+    "crates/kalkan-win",
+    "crates/kalkan-gui",
+    "crates/kalkan-app",
+]
+default-members = ["crates/kalkan-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "LicenseRef-TBD"
+repository = "https://github.com/salihraphics/kalkan"
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+kalkan-core = { path = "crates/kalkan-core" }
+kalkan-config = { path = "crates/kalkan-config" }
+kalkan-logging = { path = "crates/kalkan-logging" }
+kalkan-net = { path = "crates/kalkan-net" }
+kalkan-win = { path = "crates/kalkan-win" }
+kalkan-gui = { path = "crates/kalkan-gui" }
+
+# External crates: keep this list short and well-known.
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
+windows = "0.62"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"   # keep unwinding so the engine can recover / clean up
+strip = "symbols"
+debug = false
+
+[profile.dev]
+debug = 1
