@@ -456,7 +456,7 @@ impl Controller {
                     self.emit(Event::DiagnosticMessage {
                         level: DiagLevel::Warning,
                         message: format!(
-                            "Sample interval {} ms ignored: allowed {}..={} ms.",
+                            "Sample interval {} ms ignored: allowed {}–{} ms.",
                             d.as_millis(),
                             MIN_SAMPLE_INTERVAL.as_millis(),
                             MAX_SAMPLE_INTERVAL.as_millis()

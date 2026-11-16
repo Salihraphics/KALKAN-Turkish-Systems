@@ -15,7 +15,10 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::Controls::{
     DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED, ODT_BUTTON,
 };
-use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, HICON, ICONINFO};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateIconFromResourceEx, CreateIconIndirect, DestroyIcon, DrawIconEx, DI_NORMAL, HICON,
+    ICONINFO, LR_DEFAULTCOLOR,
+};
 
 use kalkan_core::{EngineState, ENGINE_SCOPE, ENGINE_TITLE};
 
@@ -82,6 +85,62 @@ fn draw_shield(hdc: HDC, x: i32, y: i32, size: i32) {
     let (outer, inner) = shield_points(x, y, size);
     fill_polygon(hdc, &outer, theme::PRIMARY);
     fill_polygon(hdc, &inner, theme::PRIMARY_HOVER);
+}
+
+/// Sidebar logo size (DIP). 32 / 48 / 64 px at 100 / 150 / 200 % are exact
+/// entries in the embedded icon.
+pub(super) const SIDEBAR_MARK: i32 = 32;
+/// Engine panel logo size (DIP).
+pub(super) const PANEL_MARK: i32 = 16;
+
+/// The KALKAN logo from the embedded `assets/kalkan.ico` at `px` pixels.
+pub(super) fn make_logo_icon(px: i32) -> Option<HICON> {
+    let entries = crate::brand::ico_entries(crate::brand::LOGO_ICO)?;
+    let e = crate::brand::best_entry(&entries, px.max(1) as u32)?;
+    // SAFETY: `e.data` is one complete image (PNG) from the embedded icon
+    // file; 0x0003_0000 is the required icon format version.
+    match unsafe { CreateIconFromResourceEx(e.data, true, 0x0003_0000, px, px, LR_DEFAULTCOLOR) } {
+        Ok(icon) => Some(icon),
+        Err(err) => {
+            tracing::warn!(px, error = %err.message(), "could not load the logo icon; using the drawn shield");
+            None
+        }
+    }
+}
+
+/// Window/taskbar icon: the logo, or the drawn shield if it cannot be loaded.
+pub(super) fn make_app_icon(px: i32) -> Option<HICON> {
+    make_logo_icon(px).or_else(|| make_shield_icon(px))
+}
+
+/// Logo icons for the sidebar and the engine panel at the current DPI.
+/// `None` falls back to the drawn shield.
+pub(super) struct Marks {
+    pub sidebar: Option<HICON>,
+    pub panel: Option<HICON>,
+}
+
+impl Marks {
+    pub fn new(dpi: u32) -> Self {
+        Marks {
+            sidebar: make_logo_icon(scale(SIDEBAR_MARK, dpi)),
+            panel: make_logo_icon(scale(PANEL_MARK, dpi)),
+        }
+    }
+}
+
+impl Drop for Marks {
+    fn drop(&mut self) {
+        for icon in [self.sidebar.take(), self.panel.take()]
+            .into_iter()
+            .flatten()
+        {
+            // SAFETY: icons created by `make_logo_icon` and owned here.
+            unsafe {
+                let _ = DestroyIcon(icon);
+            }
+        }
+    }
 }
 
 /// Build a window/taskbar icon showing the shield (no resource file needed).
@@ -449,6 +508,10 @@ impl Painter<'_> {
                 line(&[p(1, 11), p(4, 5), p(8, 11), p(12, 5), p(15, 11)]);
                 line(&[p(1, 8), p(15, 8)]);
             }
+            Icon::Search => {
+                self.outline_ellipse(x + u(1), y + u(1), x + u(11), y + u(11), c);
+                line(&[p(10, 10), p(15, 15)]);
+            }
             Icon::File => {
                 line(&[p(3, 1), p(10, 1), p(13, 4), p(13, 15), p(3, 15), p(3, 1)]);
                 line(&[p(10, 1), p(10, 4), p(13, 4)]);
@@ -458,6 +521,17 @@ impl Painter<'_> {
 
     pub fn shield(&self, x: i32, y: i32, size: i32) {
         draw_shield(self.hdc, x, y, size);
+    }
+
+    /// The logo icon if loaded, otherwise the drawn shield.
+    pub fn logo(&self, icon: Option<HICON>, x: i32, y: i32, size: i32) {
+        let drawn = icon.is_some_and(|i| {
+            // SAFETY: a valid icon we own, drawn into the paint DC.
+            unsafe { DrawIconEx(self.hdc, x, y, i, size, size, 0, None, DI_NORMAL) }.is_ok()
+        });
+        if !drawn {
+            self.shield(x, y, size);
+        }
     }
 }
 
@@ -735,10 +809,10 @@ impl WindowState {
             Rect::new(l.sidebar.right() - 1, 0, 1, l.sidebar.h),
             theme::BORDER,
         );
-        let mark = s(30);
-        let lx = s(20);
+        let mark = s(SIDEBAR_MARK);
+        let lx = s(18);
         let ly = l.logo.y + (l.logo.h - mark) / 2;
-        p.shield(lx, ly, mark);
+        p.logo(self.marks.sidebar, lx, ly, mark);
         let tx = lx + mark + s(12);
         p.line(
             "KALKAN",
@@ -832,7 +906,7 @@ impl WindowState {
         let btn_left = self.layout.start_btn.map_or(r.right(), |b| b.x);
         let text_w = (btn_left - r.x - s(36)).max(0);
 
-        p.shield(r.x + s(20), r.y + s(12), s(16));
+        p.logo(self.marks.panel, r.x + s(20), r.y + s(12), s(PANEL_MARK));
         p.line(
             ENGINE_TITLE,
             Rect::new(r.x + s(44), r.y + s(10), (text_w - s(24)).max(0), s(20)),

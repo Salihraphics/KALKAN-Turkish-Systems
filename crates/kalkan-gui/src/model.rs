@@ -140,6 +140,7 @@ pub enum Icon {
     Peak,
     Average,
     File,
+    Search,
 }
 
 impl Page {

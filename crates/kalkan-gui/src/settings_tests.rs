@@ -53,7 +53,7 @@ fn out_of_range_values_use_the_loaders_rules() {
         ]
     );
     assert!(
-        errs[1].message.contains("allowed 1..=90"),
+        errs[1].message.contains("allowed 1–90"),
         "{}",
         errs[1].message
     );

@@ -1017,7 +1017,7 @@ impl WindowState {
                 false,
             );
             p.icon(
-                crate::model::Icon::Logs,
+                crate::model::Icon::Search,
                 r.x + s(10),
                 r.y + (r.h - s(16)) / 2,
                 theme::TEXT_MUTED,

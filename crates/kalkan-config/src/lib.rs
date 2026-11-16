@@ -281,7 +281,7 @@ impl Config {
             issues.push(ValidationIssue {
                 key: "schema_version",
                 message: format!(
-                    "unsupported version {} (this build supports 1..={SCHEMA_VERSION})",
+                    "unsupported version {} (this build supports 1–{SCHEMA_VERSION})",
                     self.schema_version
                 ),
             });
@@ -292,7 +292,7 @@ impl Config {
             issues.push(ValidationIssue {
                 key: "monitor.sample_interval_ms",
                 message: format!(
-                    "{} is out of range (allowed {lo}..={hi})",
+                    "{} is out of range (allowed {lo}–{hi})",
                     self.monitor.sample_interval_ms
                 ),
             });
@@ -303,7 +303,7 @@ impl Config {
             issues.push(ValidationIssue {
                 key: "logging.max_log_files",
                 message: format!(
-                    "{} is out of range (allowed {lo}..={hi})",
+                    "{} is out of range (allowed {lo}–{hi})",
                     self.logging.max_log_files
                 ),
             });
@@ -314,7 +314,7 @@ impl Config {
             issues.push(ValidationIssue {
                 key: "logging.max_file_size_mb",
                 message: format!(
-                    "{} is out of range (allowed {lo}..={hi})",
+                    "{} is out of range (allowed {lo}–{hi})",
                     self.logging.max_file_size_mb
                 ),
             });

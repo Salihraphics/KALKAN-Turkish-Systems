@@ -184,6 +184,8 @@ struct WindowState {
     close_forced: bool,
     /// Window/taskbar icons created at runtime; destroyed on drop.
     icons: Vec<HICON>,
+    /// Logo icons drawn in the sidebar and engine panel (per DPI).
+    marks: paint::Marks,
     /// Logs and Settings page controls and state.
     pages: pages::Pages,
     /// Set to `true` when the state is dropped (clean shutdown check).
@@ -197,7 +199,7 @@ impl Drop for WindowState {
         self.shutdown_confirmed.set(self.ui.shutdown_complete);
         self.dropped.set(true);
         for icon in self.icons.drain(..) {
-            // SAFETY: icons we created with CreateIconIndirect; the window
+            // SAFETY: icons we created (logo or drawn shield); the window
             // that used them is being destroyed.
             unsafe {
                 let _ = DestroyIcon(icon);
@@ -370,6 +372,7 @@ impl WindowState {
     fn on_dpi_changed(&mut self, dpi: u32) {
         self.dpi = dpi;
         self.fonts = Fonts::new(dpi);
+        self.marks = paint::Marks::new(dpi);
         self.pages.apply_fonts(&self.fonts.body, dpi);
         // Re-layout now (the window size may not change, so WM_SIZE may not
         // follow); WM_SIZE re-lays out again if it does.
@@ -633,12 +636,12 @@ fn on_create(hwnd: HWND, lp: LPARAM) -> Result<(), GuiError> {
     let start_btn = create_button(hwnd, hinst, ID_START, "Start")?;
     let stop_btn = create_button(hwnd, hinst, ID_STOP, "Stop")?;
 
-    // Window and taskbar icons, drawn at runtime (no resource file).
+    // Window and taskbar icons from the embedded logo (no resource file).
     let mut icons = Vec::new();
     for (which, metric) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)] {
         // SAFETY: plain query.
         let size = unsafe { GetSystemMetrics(metric) }.max(16);
-        if let Some(icon) = paint::make_shield_icon(size) {
+        if let Some(icon) = paint::make_app_icon(size) {
             // SAFETY: WM_SETICON on our own window with an icon we own.
             unsafe {
                 SendMessageW(
@@ -723,6 +726,7 @@ fn on_create(hwnd: HWND, lp: LPARAM) -> Result<(), GuiError> {
         layout: Layout::default(),
         wake_pending,
         icons,
+        marks: paint::Marks::new(dpi),
         pages,
         closing: false,
         close_forced: false,
@@ -1508,6 +1512,16 @@ fn self_test(
     );
 
     // ── Logs page: the real log buffer ───────────────────────────────────
+    let logo = with_state(hwnd, |s| {
+        (
+            s.marks.sidebar.is_some() && s.marks.panel.is_some(),
+            s.icons.len(),
+        )
+    });
+    check(
+        format!("embedded logo loaded for sidebar, panel and window icons ({logo:?})"),
+        logo == Some((true, 2)),
+    );
     self_test_logs(hwnd, nav, &mut check, &mut capture);
     // ── Settings page: real file, validation, live apply, reset ──────────
     self_test_settings(hwnd, nav, &mut check, &mut capture);
@@ -1770,15 +1784,22 @@ fn self_test_logs(
     let path =
         std::env::temp_dir().join(format!("kalkan-selftest-export-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    with_state_mut(hwnd, |s| s.export_logs_to(path.clone()));
+    // The view keeps refreshing while the file is written (the export itself
+    // logs an entry), so compare with what was visible when Export ran.
+    let snapshot = with_state_mut(hwnd, |s| {
+        let (text, n) = (s.pages.log.export_text(), s.pages.log.visible_len());
+        s.export_logs_to(path.clone());
+        (text, n)
+    });
     let done = wait_until(hwnd, STEP_TIMEOUT, |s| !s.pages.io_busy);
-    let lines = std::fs::read_to_string(&path)
-        .map(|t| t.lines().count())
-        .unwrap_or(0);
-    let visible = with_state(hwnd, |s| s.pages.log.visible_len()).unwrap_or(0);
+    let written = std::fs::read_to_string(&path).unwrap_or_default();
+    let (expected, count) = snapshot.unwrap_or_default();
     check(
-        format!("Export writes the visible entries off the UI thread ({lines} lines)"),
-        done && lines == visible && lines > 0,
+        format!(
+            "Export writes the visible entries off the UI thread ({count} entries, {} lines)",
+            written.lines().count()
+        ),
+        done && count > 0 && written == expected,
     );
     let _ = std::fs::remove_file(&path);
     capture("11-logs");

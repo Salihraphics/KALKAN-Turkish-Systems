@@ -10,6 +10,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod brand;
 pub mod layout;
 pub mod logview;
 pub mod model;

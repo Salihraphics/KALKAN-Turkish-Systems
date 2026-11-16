@@ -101,7 +101,7 @@ pub const BTN_H: i32 = 36;
 pub const RADIUS: i32 = 10;
 pub const ICON: i32 = 16;
 /// Header action buttons (Logs, Settings).
-pub const ACTION_W: i32 = 96;
+pub const ACTION_W: i32 = 112;
 /// Log viewer toolbar and rows.
 pub const TOOLBAR_H: i32 = 36;
 pub const CHIP_W: i32 = 76;
