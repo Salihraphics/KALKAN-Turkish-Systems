@@ -9,7 +9,7 @@
 | **Validated on Windows CI** | Baseline benchmark and 30-minute soaks (runs 28, 32), frame breakdown (run 34); the first GUI optimization, commit `06e2997`: no relayout and no child-control repaints on metrics updates, sidebar skipped, quieter Logs page, status log line at Trace (run 36: benchmark, self-test 63/63, 2-minute and 30-minute soaks 43/43); GUI-mode log file with rotation during the soak (run 32 listing: `kalkan.log` + 6 archives of ≤ 5 MiB) |
 | **Measured on Linux only** | Tracker sort-key change (local commit `5731234`): 128 / 32 simulated interfaces 43 → 27 µs, 8.8 → 6.5 µs |
 | **Simulated** | `tests/soak_sim.rs`: scripted adapters, counter resets and API failures, fake process probe (runs on Linux and in Windows CI) |
-| **Pending (not yet run on Windows)** | Local commit `5731234`: live-block invalidation, header/note skipped in paint, per-block paint timing, same-process A/B of the old and new update path; the tracker change |
+| **Pending (not yet run on Windows)** | Local commit `5731234`: live-block invalidation, header/note skipped in paint, per-block paint timing, same-process A/B of the old and new update path; the tracker change. Uncommitted: Settings page rendering and resize measurements (see "Settings rendering and resize measurements") |
 | **Not measured at all** | Desktop/laptop hardware, Windows 10, high-DPI monitors, real adapter churn, sessions longer than 30 minutes, a standard user |
 
 This page records how KALKAN's runtime cost was measured, what was found,
@@ -27,7 +27,7 @@ from a tool in this repository and a CI run that can be repeated.
 | Tool | What it runs | What it reports |
 |---|---|---|
 | `kalkan --benchmark` | Headless: the real monitor, tracker, engine and logging stack. About 2 minutes | Environment and build; 3 rounds × n=1000 of `GetIfTable2`, the tracker and both together (mean, p50, p99, max, CPU per call); tracker scaling with 1–128 **simulated** interfaces; cost of a log event through the production subscriber (file + viewer buffer); size and cost of the GUI's status log line; network sampling while another thread logs flat out; engine CPU stopped and running (3 × 10 s each); memory, handles and threads at start-up, while running and after 200 start/stop cycles |
-| `kalkan --soak <minutes>` | The real window, engine, monitor and log file (GUI-mode file logging with rotation; in CI run 32 the log file rotated at 5 MiB and kept 6 archives within the default retention of 7) | Per minute: process CPU, working set, private bytes, kernel/GDI/USER handles, threads, main-window paints, owner-drawn control paints, relayouts and metrics fast-path updates, GUI paint time, and **input latency** (a helper thread posts a timestamped message every 100 ms; the delay until the UI thread handles it is how long a click would wait). Activities rotate every 5 minutes: steady monitoring, 20 start/stop cycles, every page + minimize/restore + 4 resizes + DPI 144→96, a 50 000-line log burst with the Logs page open, and a settings save + engine restart. At start: the cost of one frame (back buffer / drawing / blit / owner-drawn controls; validated in runs 34 and 36). Added in local commit `5731234`, not yet run on Windows: drawing time per block, and one metrics update through the previous and the current code path in the same process |
+| `kalkan --soak <minutes>` | The real window, engine, monitor and log file (GUI-mode file logging with rotation; in CI run 32 the log file rotated at 5 MiB and kept 6 archives within the default retention of 7) | Per minute: process CPU, working set, private bytes, kernel/GDI/USER handles, threads, main-window paints, owner-drawn control paints, relayouts and metrics fast-path updates, GUI paint time, and **input latency** (a helper thread posts a timestamped message every 100 ms; the delay until the UI thread handles it is how long a click would wait). Activities rotate every 5 minutes: steady monitoring, 20 start/stop cycles, every page + minimize/restore + 4 resizes + DPI 144→96, a 50 000-line log burst with the Logs page open, and a settings save + engine restart. At start: the cost of one frame (back buffer / drawing / blit / owner-drawn controls; validated in runs 34 and 36). Added in local commit `5731234`, not yet run on Windows: drawing time per block, and one metrics update through the previous and the current code path in the same process. Added locally (uncommitted), not yet run on Windows: Settings page rendering and resize handling (below) |
 | `tests/soak_sim.rs` | Any OS. The real engine and lifecycle, tracker, GUI model and logging stack; a **scripted** monitor (adapter churn, counter resets, API failures every 41 samples) and a fake process probe | A counting global allocator measures live heap bytes and allocations per sample; heap growth over 5 000 samples, 300 start/stop cycles and a 100 000-line log flood from 4 threads; asserted bounds |
 
 CI runs the benchmark, the simulated test and a 2-minute soak on every push,
@@ -187,6 +187,40 @@ the VMs (0.47 % vs 0.58 % and 1.00 %), so no CPU improvement is claimed
 from these runs; it is below 1 % of one core in every steady minute of all
 three soaks. Memory and handles stay flat, and input latency is unchanged
 (sub-millisecond p99).
+
+## Settings rendering and resize measurements (implemented, Windows results pending)
+
+Added to `kalkan --soak` (code: `win32_soak.rs`, statistics helper and its
+unit tests: `measure.rs`). They run **once at the start of a soak**, after
+the existing frame measurements and before the timed minutes, so they do not
+affect the per-minute numbers. They drive the same paths a user triggers
+(`WM_PAINT`, `relayout`, `SetWindowPos` → `WM_SIZE`), read the existing
+always-on counters, and add no timer, no polling and no code to normal
+operation. Every operation is followed by a synchronous `RedrawWindow
+(RDW_UPDATENOW | RDW_ALLCHILDREN)`, so its paints are included in its time.
+
+| Key | What is timed | n |
+|---|---|---|
+| `settings.frame_all_children` | Whole window and every child control of the Settings page repainted (number boxes, level segments, switches, buttons) | 100 |
+| `settings.frame_main_only` | Main window only (labels, help text, status card, row frames) | 100 |
+| `settings.relayout_and_paint` | A relayout of the Settings page (what navigating to it does), then its paints | 100 |
+| `resize.network` | One window resize on the live Network page: `SetWindowPos`, the `WM_SIZE` relayout, the resulting paints | 40 |
+| `resize.settings` | The same on the Settings page (most child controls) | 40 |
+
+Resizes cycle through 800×650, 1000×740, 860×690 and 960×720 (window size:
+distinct, above the minimum, and within a 1024×768 screen so Windows does
+not clamp two steps to the same size); the original size is restored
+afterwards. Each key
+reports mean, p50, p95 and max per operation, and per operation the number
+and time of relayouts, main-window paints (and the drawing part) and
+owner-drawn control paints, plus drawing time per block (the Settings page
+itself is in the `note_pages` block).
+
+**Status:** implemented and compiled for Windows (Clippy with warnings as
+errors, cross-build); the statistics helper is unit-tested on Linux. **No
+Windows numbers exist yet**: they come from the first CI run after the final
+push (the 2-minute soak in the main job and the 30-minute soak job both run
+them).
 
 ## Pending (local, not yet validated on Windows)
 

@@ -13,6 +13,7 @@
 pub mod brand;
 pub mod layout;
 pub mod logview;
+pub mod measure;
 pub mod model;
 pub mod settings;
 pub mod theme;

@@ -31,6 +31,7 @@ use kalkan_core::EngineState;
 use super::{
     click, pump, run_message_loop_for, simulate_dpi, wait_until, with_state, with_state_mut,
 };
+use crate::measure::{per_op_ms, Summary};
 use crate::model::Page;
 use crate::{Check, Resources, SelfTestReport};
 
@@ -280,6 +281,12 @@ pub(super) fn soak(
         note(&mut r, format!("R soak.{key}_ms {ms:.4} ms"));
         note(&mut r, format!("R soak.{key}_draw_items {items:.2}"));
     }
+
+    // ── Settings page rendering and resize handling (one-off) ────────────
+    measure_settings_page(hwnd, nav, &mut r, &note);
+    measure_resize(hwnd, nav, &mut r, &note);
+    click(nav[Page::Network.index()]);
+    run_message_loop_for(hwnd, Duration::from_secs(1));
 
     // ── Input-latency probe ──────────────────────────────────────────────
     let base = *PING_BASE.get_or_init(Instant::now);
@@ -743,4 +750,203 @@ fn settings_restart(hwnd: HWND, nav: [HWND; 5], start: HWND, stop: HWND) -> bool
     }
     let _ = with_state_mut(hwnd, |s| s.ui.page_notice = None);
     ok
+}
+
+// ── One-off measurements: Settings page rendering, resize handling ──────
+//
+// These run once, at the start of a soak, before the timed minutes. They
+// drive the same code the user triggers (WM_PAINT, relayout, SetWindowPos ->
+// WM_SIZE) and read the always-on counters; they add no timer, no polling
+// and nothing to normal operation.
+
+/// Counter values at one instant, for per-operation deltas.
+struct Snap {
+    c: Counters,
+    draw_ns: u64,
+    blocks: Vec<u64>,
+}
+
+fn snap() -> Snap {
+    Snap {
+        c: counters(),
+        draw_ns: PAINT_DRAW_NS.load(Ordering::Relaxed),
+        blocks: PAINT_BLOCK_NS
+            .iter()
+            .map(|a| a.load(Ordering::Relaxed))
+            .collect(),
+    }
+}
+
+/// "relayouts 1.00, relayout 0.120 ms, main paints 1.00, paint 2.100 ms,
+/// owner-drawn 12.00 (0.900 ms)" per operation.
+fn work_per_op(a: &Snap, b: &Snap, n: usize) -> String {
+    format!(
+        "relayouts {:.2} ({:.3} ms), main paints {:.2} ({:.3} ms, of which drawing {:.3} ms), owner-drawn controls {:.2} ({:.3} ms)",
+        (b.c.relayouts - a.c.relayouts) as f64 / n as f64,
+        per_op_ms(a.c.relayout_ns, b.c.relayout_ns, n),
+        (b.c.paints - a.c.paints) as f64 / n as f64,
+        per_op_ms(a.c.paint_ns, b.c.paint_ns, n),
+        per_op_ms(a.draw_ns, b.draw_ns, n),
+        (b.c.draw_items - a.c.draw_items) as f64 / n as f64,
+        per_op_ms(a.c.draw_item_ns, b.c.draw_item_ns, n),
+    )
+}
+
+fn blocks_per_op(a: &Snap, b: &Snap, n: usize) -> String {
+    PAINT_BLOCKS
+        .iter()
+        .zip(a.blocks.iter().zip(&b.blocks))
+        .map(|(name, (x, y))| format!("{name} {:.3}", per_op_ms(*x, *y, n)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Time `n` runs of `op`, each followed by synchronous processing of the
+/// pending paints of the window and its children.
+fn time_ops(hwnd: HWND, n: usize, mut op: impl FnMut(usize)) -> (Vec<f64>, Snap, Snap) {
+    let a = snap();
+    let mut samples = Vec::with_capacity(n);
+    for i in 0..n {
+        let t = Instant::now();
+        op(i);
+        // SAFETY: synchronous repaint of our own window; no borrow is held.
+        unsafe {
+            let _ = RedrawWindow(Some(hwnd), None, None, RDW_UPDATENOW | RDW_ALLCHILDREN);
+        }
+        samples.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    (samples, a, snap())
+}
+
+fn report(
+    r: &mut SelfTestReport,
+    note: &impl Fn(&mut SelfTestReport, String),
+    key: &str,
+    what: &str,
+    mut samples: Vec<f64>,
+    a: &Snap,
+    b: &Snap,
+) {
+    let n = samples.len();
+    let Some(sum) = Summary::of(&mut samples) else {
+        note(r, format!("soak: {key}: no samples"));
+        return;
+    };
+    note(
+        r,
+        format!(
+            "soak: {key} ({what}): {}; per operation: {}; drawing per block (ms): {}",
+            sum.line(),
+            work_per_op(a, b, n),
+            blocks_per_op(a, b, n)
+        ),
+    );
+    note(r, format!("R soak.{key}.mean_ms {:.4} ms", sum.mean));
+    note(r, format!("R soak.{key}.p95_ms {:.4} ms", sum.p95));
+    note(r, format!("R soak.{key}.max_ms {:.4} ms", sum.max));
+}
+
+/// Settings page rendering: a full frame with and without the child
+/// controls (number boxes, segments, switches, buttons), and a relayout +
+/// paint of the page (what navigating to it or resizing it does).
+fn measure_settings_page(
+    hwnd: HWND,
+    nav: [HWND; 5],
+    r: &mut SelfTestReport,
+    note: &impl Fn(&mut SelfTestReport, String),
+) {
+    const N: usize = 100;
+    click(nav[Page::Settings.index()]);
+    run_message_loop_for(hwnd, Duration::from_millis(300));
+    for (key, what, flags) in [
+        (
+            "settings.frame_all_children",
+            "whole window and every child control repainted",
+            RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+        ),
+        (
+            "settings.frame_main_only",
+            "main window only",
+            RDW_INVALIDATE | RDW_UPDATENOW,
+        ),
+    ] {
+        let (samples, a, b) = time_ops(hwnd, N, |_| {
+            // SAFETY: synchronous repaint of our own window; no borrow is held.
+            unsafe {
+                let _ = RedrawWindow(Some(hwnd), None, None, flags);
+            }
+        });
+        report(r, note, key, what, samples, &a, &b);
+    }
+    let (samples, a, b) = time_ops(hwnd, N, |_| {
+        with_state_mut(hwnd, |s| s.relayout());
+    });
+    report(
+        r,
+        note,
+        "settings.relayout_and_paint",
+        "relayout of the Settings page, then its paints",
+        samples,
+        &a,
+        &b,
+    );
+}
+
+/// Window resize handling on the live Network page and on the Settings page
+/// (the page with the most child controls): SetWindowPos -> WM_SIZE ->
+/// relayout -> paint, through the normal message handling. Sizes cycle
+/// above the minimum window size; the original size is restored afterwards.
+fn measure_resize(
+    hwnd: HWND,
+    nav: [HWND; 5],
+    r: &mut SelfTestReport,
+    note: &impl Fn(&mut SelfTestReport, String),
+) {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    const N: usize = 40;
+    // Distinct window sizes that fit a 1024×768 screen (the CI runner's) and
+    // stay above the minimum size, so every step is a real resize and none
+    // is clamped to the same size as the previous one.
+    const SIZES: [(i32, i32); 4] = [(800, 650), (1000, 740), (860, 690), (960, 720)];
+    let mut orig = RECT::default();
+    // SAFETY: valid window; `orig` is a valid out-pointer.
+    let _ = unsafe { GetWindowRect(hwnd, &mut orig) };
+    let resize = |w: i32, h: i32| {
+        // SAFETY: resizing our own window; no borrow is held, so WM_SIZE
+        // runs the normal relayout.
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                w,
+                h,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    };
+    for (page, key) in [
+        (Page::Network, "resize.network"),
+        (Page::Settings, "resize.settings"),
+    ] {
+        click(nav[page.index()]);
+        run_message_loop_for(hwnd, Duration::from_millis(300));
+        let (samples, a, b) = time_ops(hwnd, N, |i| {
+            let (w, h) = SIZES[i % SIZES.len()];
+            resize(w, h);
+        });
+        report(
+            r,
+            note,
+            key,
+            "SetWindowPos, WM_SIZE relayout and the resulting paints",
+            samples,
+            &a,
+            &b,
+        );
+    }
+    resize(orig.right - orig.left, orig.bottom - orig.top);
+    pump();
 }
