@@ -4,11 +4,13 @@
 
 **Complex network technology. Simple user experience.**
 
+<p align="center"><b>A Novera Labs Product</b><br/>Developed in Türkiye 🇹🇷 · Built in Türkiye. Powered by Rust.</p>
+
 <p align="center">
   <img src="https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge&logo=rust" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?style=for-the-badge&logo=windows" />
   <img src="https://img.shields.io/badge/Architecture-Native-success?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Status-Phase%205%20of%207-yellow?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Status-Phase%206%20of%207%20(in%20progress)-yellow?style=for-the-badge" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" />
 </p>
 
@@ -26,6 +28,21 @@ Existing network tools are often hard to use. KALKAN puts complex networking ope
 
 KALKAN is **not** a GUI wrapper around GoodbyeDPI or any other tool. It is an independent application.
 
+| | |
+|---|---|
+| Product | **KALKAN** |
+| Developer brand | **Novera Labs** — *A Novera Labs Product* |
+| Engine | **KOR — Kernel Operations Runtime** |
+| Core language | Rust |
+| GUI | Native Win32 |
+| Origin | Türkiye 🇹🇷 |
+
+> **About the engine name.** KOR is KALKAN's background engine: an ordinary **user-mode** part of `kalkan.exe` (threads in the application process). The word "Kernel" in *Kernel Operations Runtime* does **not** mean it runs in Windows kernel mode, uses or installs a kernel driver, or is a Windows kernel component. KALKAN installs no drivers.
+>
+> **Naming status.** The engine was previously called *GoodBoyDPI*. The documentation now uses KOR; the **code-level rename has not been done yet**: the current build still shows "GoodBoyDPI — Rust Core Engine" in the engine panel and uses legacy internal identifiers (for example the worker thread name `goodboydpi-core` in log lines). Screenshots show the legacy name.
+
+**Current capabilities:** a native Windows GUI (Win32, Rust); read-only network monitoring through the Windows IP Helper API (`GetIfTable2`) with per-interface statistics, download/upload speed and traffic totals; KALKAN's own CPU and memory use; Logs and Settings pages; TOML configuration; event-driven communication between the GUI and the engine. KALKAN does **not** implement DPI circumvention, packet capture, packet manipulation or injection, or any restriction bypass, and it does not enable access to any blocked service.
+
 ## 🚧 Development status
 
 KALKAN is built in phases. A feature is marked ✅ only after it has been compiled and tested.
@@ -34,7 +51,7 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 |---|---|---|
 | 1 | Project foundation and compilation | ✅ Done |
 | 2 | Native Win32 GUI | ✅ Done |
-| 3 | Core engine lifecycle: GoodBoyDPI (threaded) | ✅ Done |
+| 3 | Core engine lifecycle: KOR (threaded; legacy name GoodBoyDPI) | ✅ Done |
 | 4 | Read-only network monitoring and UI refinement | ✅ Done |
 | 5 | Logging (files, rotation, in-app view) and configuration UI | ✅ Done |
 | 6 | Performance measurement and optimization | 🔧 In progress (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md)) |
@@ -45,7 +62,7 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 Captured automatically by `kalkan --self-test` on the Windows CI runner (CI run 20). The traffic is real and low, because the runner is idle:
 
 <p align="center">
-  <img src="docs/screenshots/dashboard-running.png" width="720" alt="Dashboard: GoodBoyDPI running, live download/upload/CPU/memory cards, active interface strip" />
+  <img src="docs/screenshots/dashboard-running.png" width="720" alt="Dashboard: engine running (shown under its legacy name GoodBoyDPI in this build), live download/upload/CPU/memory cards, active interface strip" />
 </p>
 
 | Logs (real entries, level chips, search) | Settings (editable, validated) |
@@ -86,7 +103,7 @@ KALKAN reads the interface counters Windows already keeps, using IP Helper `GetI
 
 | Component | Status | Verified by |
 |---|---|---|
-| GoodBoyDPI engine: controller and worker threads, lifecycle, Start/Stop/QueryStatus/Shutdown, errors, panics, bounded shutdown, no orphaned threads | ✅ | 36 engine tests, repeated 25× per CI build on Windows |
+| KOR engine: controller and worker threads, lifecycle, Start/Stop/QueryStatus/Shutdown, errors, panics, bounded shutdown, no orphaned threads | ✅ | 36 engine tests, repeated 25× per CI build on Windows |
 | **Read-only network monitoring:** interfaces, rates, totals, peaks, adapter changes, resets, filter/virtual/same-MAC de-duplication | ✅ | 15 tracker tests with simulated adapters, 7 Windows-side classification tests, a real `GetIfTable2` test on Windows, and the CI end-to-end check: a 5,000,000-byte download made the counted bytes grow by 5,054,232 (1.01×; the rest is background traffic) |
 | Process metrics (KALKAN's own CPU and working set) | ✅ | Windows unit test and self-test |
 | **Refined native GUI:** teal design tokens, line icons, state pill, hover and hand cursor, logo window and taskbar icon, live Dashboard, Network page with graphs and interface table, Statistics, Logs, Settings | ✅ | 56 GUI unit tests: model, layout, theme, log view, settings form, logo (including WCAG AA contrast for every text/surface pair, and every page fitting at minimum size at 96 to 192 DPI), plus the **63-check** `--self-test`, run 3× per CI build |
@@ -94,9 +111,10 @@ KALKAN reads the interface counters Windows already keeps, using IP Helper `GetI
 | **Log rotation and retention:** size limit, numbered archives, retention, never deleting the active or unrelated files, restart, rename failure, concurrent writers, shutdown while logging | ✅ | 20 `kalkan-logging` tests (rotation, buffer, parsing, history, runtime reload), repeated 40× locally without a failure |
 | **Logs page:** real entries, level chips, search, pause/resume, copy, export, file status | ✅ | 8 `logview` tests and the self-test on Windows (clipboard and exported file compared byte-for-byte) |
 | **Settings page:** load, edit, validate, save, revert, reset to defaults, live apply, invalid-file backup | ✅ | 16 config and 10 settings-form tests; self-test saves to disk, rejects bad input, resets, and CI run 3 starts from an invalid file and checks the `.bak` |
-| GUI-mode log file, `start_engine_on_launch`, start-up error dialog, Save As and Reset dialogs | ⚠️ | Unit-tested where possible. CI runs log to the console, and the self-test calls the code behind the two dialogs instead of clicking them |
+| GUI-mode log file | ✅ | Exercised on Windows CI by the 30-minute `--soak` run (real file, rotation under 50 000-line bursts, no file errors) |
+| `start_engine_on_launch`, start-up error dialog, Save As and Reset dialogs | ⚠️ | Unit-tested where possible. The self-test calls the code behind the two dialogs instead of clicking them; `start_engine_on_launch` and the error dialog are not run by CI |
 
-**Measurements.** These were taken on the GitHub Actions `windows-latest` VM, CI run 15 unless noted. They are single runs, not a controlled benchmark:
+**Phase 4 measurements (historical).** Taken on the GitHub Actions `windows-latest` VM, CI run 15 unless noted; single runs, not a controlled benchmark. The Phase 6 measurements, with repeated rounds, 30-minute soaks and their limits, are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) and replace these:
 
 | What | Result |
 |---|---|
@@ -127,12 +145,12 @@ Wi-Fi, disconnects, reconnects, adapter removal and counter resets are covered b
 ### Not implemented yet
 
 - Scrolling: very long interface lists are cut off with "+N more"; enlarge the window to see all of them. There is also no light theme and no system tray.
-- Any DPI-related functionality (Phase 7, research only). "DPI" in GoodBoyDPI is part of an internal name only.
+- Any DPI-related functionality (Phase 7, research only). "DPI" in the legacy engine name GoodBoyDPI never referred to an implemented feature; the engine's official name is now KOR (the code-level rename is still pending).
 
 ## 🧠 Architecture
 
 ```
-kalkan-app ──► kalkan-gui ──► kalkan-core      GoodBoyDPI engine; GUI only speaks EngineLink
+kalkan-app ──► kalkan-gui ──► kalkan-core      KOR engine (user mode); GUI only speaks EngineLink
      │
      ├──► kalkan-net      read-only counters → rates/totals (NetTracker), no packet API
      ├──► kalkan-config   TOML + validation (also used by the GUI's Settings page)
@@ -147,7 +165,7 @@ kalkan-app ──► kalkan-gui ──► kalkan-core      GoodBoyDPI engine; GU
 
 ### On Windows (recommended)
 
-Requirements: [Rust](https://rustup.rs) stable (1.80+) with the MSVC toolchain and the Visual Studio C++ Build Tools.
+Requirements: [Rust](https://rustup.rs) stable (1.85+) with the MSVC toolchain and the Visual Studio C++ Build Tools.
 
 ```powershell
 cargo build --release          # -> target\release\kalkan.exe
@@ -186,9 +204,13 @@ By default the configuration lives at `%APPDATA%\Kalkan\kalkan.toml`. If the fil
 
 Performance is a requirement, not an afterthought:
 
-- No background polling while idle, and no async runtime unless it is justified. The GUI sleeps in `GetMessageW` and uses no timers.
+- No background polling while idle, and no async runtime unless it is justified. The GUI sleeps in `GetMessageW` and uses no periodic timers (the only timer is a one-shot timeout while closing).
 - Monitoring is read-only. It reads OS counters and does no packet processing.
-- Phase 6 measures CPU, memory, handles, input latency and paint work with `kalkan --benchmark`, `kalkan --soak <minutes>` and a simulated long-run test. Results, methodology and limits are in **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**. On the GitHub Actions Windows VM (not desktop hardware): network monitoring costs about 0.34 ms CPU per 1 s sample; with the live Network page open the whole app stayed below 1 % of one core in every steady minute of three 30-minute soaks; memory, handles and threads were flat; input latency p99 was 0.2 ms. **We do not claim numbers for real desktop hardware until they are measured there.**
+- Phase 6 (in progress) measures CPU, memory, handles, input latency and paint work with `kalkan --benchmark`, `kalkan --soak <minutes>` and a simulated long-run test. Results, methodology and limits are in **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**.
+  - **Validated on Windows CI** (GitHub Actions VM, not desktop hardware): network monitoring costs about 0.34 ms CPU per 1 s sample; with the live Network page open the whole app stayed below 1 % of one core in every steady minute of three 30-minute soaks; memory, handles and threads were flat; input latency p99 was 0.2 ms. The first GUI repaint optimization cut owner-drawn control repaints during monitoring from 5.05 to 0.03 per second and relayouts from 1 to 0 per second. No CPU improvement is claimed: the difference is within the run-to-run noise of the VMs.
+  - **Simulated** (any OS): no heap growth over 5 000 samples with adapter churn and API failures, 300 start/stop cycles and a 100 000-line log flood.
+  - **Not yet run on Windows:** the latest local changes (repainting only the live blocks, cached tracker sort keys); the tracker change was measured on Linux only.
+  - **We do not claim numbers for real desktop hardware until they are measured there.**
 
 ## 🔐 Security and transparency
 
@@ -197,7 +219,7 @@ Performance is a requirement, not an afterthought:
 - No undocumented system modifications. No drivers are installed in Phases 1–6.
 - Administrator privileges are not required for monitoring, and the current privilege level is shown to the user.
 - `unsafe` code is confined to `kalkan-win` and the GUI's `win32` module, and every block is documented with a `SAFETY:` comment. All other crates and modules forbid or deny `unsafe`.
-- Dependencies are small and well known: `windows`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`. Phase 5 added no new third-party crate; log rotation, the viewer buffer and ICO loading are written in-tree.
+- Dependencies are small and well known: `windows`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`. Phases 5 and 6 added no new third-party crate; log rotation, the viewer buffer, ICO loading and the measurement tools are written in-tree.
 
 ## 🤝 Contributing
 
@@ -216,4 +238,4 @@ cargo test --workspace
 KALKAN is released under the [MIT License](LICENSE).
 Copyright (c) 2026 Salih Kıvanç TULUM.
 
-<p align="center">Built with 🦀 Rust</p>
+<p align="center"><b>KALKAN — A Novera Labs Product</b><br/>Built in Türkiye. Powered by Rust. 🦀</p>

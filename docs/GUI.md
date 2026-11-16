@@ -1,5 +1,7 @@
 # KALKAN GUI
 
+*KALKAN — A Novera Labs Product. Engine: KOR — Kernel Operations Runtime (legacy name GoodBoyDPI; see [ARCHITECTURE.md](ARCHITECTURE.md) for the naming status).*
+
 The GUI is native Win32, painted with GDI. It uses no Electron, WebView2, Tauri or UI framework. The only Windows dependency is the `windows` crate.
 
 ## Module structure (`crates/kalkan-gui`)
@@ -34,9 +36,9 @@ kalkan-app ─────┼──► kalkan_gui::run(info, Box<dyn EngineLink>
 
 * The GUI depends on `kalkan-core`, and since Phase 5 on `kalkan-config` (Settings validation and saving) and `kalkan-logging` (viewer buffer, runtime level and rotation). It never sees `kalkan-net` or `kalkan-win`. See [ARCHITECTURE.md](ARCHITECTURE.md) for the reason.
 * Phase 5 adds two more posted messages: `WM_APP_LOG` (new log entries; coalesced like `WM_APP_ENGINE`) and `WM_APP_IO` (a save/export finished on the `kalkan-io` thread). If one arrives while the window state is borrowed (for example during a modal dialog), it is re-posted rather than dropped.
-* The app passes the real engine, `kalkan_core::EngineHandle` (GoodBoyDPI, see [ARCHITECTURE.md](ARCHITECTURE.md)). In `WM_CREATE` the GUI installs a waker. The engine calls it from its own thread, and it posts `WM_APP_ENGINE`. An `AtomicBool` makes a burst of events produce at most one posted message. The flag is cleared *before* draining, so an event that arrives mid-drain triggers a new post.
+* The app passes the real engine, `kalkan_core::EngineHandle` (KOR, see [ARCHITECTURE.md](ARCHITECTURE.md)). In `WM_CREATE` the GUI installs a waker. The engine calls it from its own thread, and it posts `WM_APP_ENGINE`. An `AtomicBool` makes a burst of events produce at most one posted message. The flag is cleared *before* draining, so an event that arrives mid-drain triggers a new post.
 * The GUI never polls the engine and never waits for it. The displayed engine state is always the last `StateChanged` or `Status` the engine sent. The GUI never sets it on its own.
-* Periodic `Status` events (one per sample interval while Running) repaint only when the Dashboard is visible.
+* Periodic `Status` events (one per sample interval while Running) repaint only when a live page (Dashboard, Network Monitoring, Statistics) is visible.
 
 ## Honesty rules for displayed data
 
@@ -113,7 +115,7 @@ All colours and sizes come from `theme.rs`. There are no gradients, shadows or a
 
   A duplicate command that gets past the buttons (for example, sent directly) is rejected by the engine. It shows an amber warning notice and the state does not change.
 * Errors from the engine (`EngineError`) appear as a red notice with the engine's real message. A successful Start or Stop clears old notices.
-* The engine panel always shows the identity **GoodBoyDPI — Rust Core Engine** and the scope line "Lifecycle and process metrics only. No DPI circumvention or packet processing." The scope line spans the full panel width below the buttons, so it stays readable at the minimum window size. A layout test checks this.
+* The engine panel always shows the engine identity, currently still the legacy title **GoodBoyDPI — Rust Core Engine** (`kalkan_core::ENGINE_TITLE`; renaming it to KOR is planned, not done), and the scope line "Lifecycle and process metrics only. No DPI circumvention or packet processing." (`ENGINE_SCOPE`; the wording predates read-only network monitoring and understates what the engine reads; updating it belongs with the planned rename) The scope line spans the full panel width below the buttons, so it stays readable at the minimum window size. A layout test checks this.
 * Keyboard: Tab/Shift+Tab reach every Logs and Settings control (search box, chips, list, Pause/Copy/Export, level segments, number boxes, switches, Save/Revert/Reset). Ctrl+C in the log list copies the selected entry.
 
 ## Logs page (Phase 5)
@@ -149,7 +151,8 @@ All colours and sizes come from `theme.rs`. There are no gradients, shadows or a
 ## Resource use
 
 * `GetMessageW` blocks, and the GUI has no periodic timers, so the UI uses no CPU while idle. While the engine is Running, the UI wakes once per sample interval (default 1 s) to show new metrics. While Stopped, nothing wakes it. Measured in Phase 6: see [PERFORMANCE.md](PERFORMANCE.md).
-* **Update paths (Phase 6).** A *structural* change (engine state, button state, notice, page, size, DPI, a layout change) runs the full `relayout`: view, layout, every control moved/shown/enabled, the whole window and its children repainted. A *metrics-only* status (numbers and graphs) takes `refresh_metrics`: the view and layout are rebuilt; if the layout is unchanged, only the blocks that show live data (engine panel, tiles, cards, strip, table) of the main window are invalidated. No control is touched, and `paint` skips the sidebar, header and explanatory note when they are outside the update region. Measured effect: owner-drawn control repaints 5.05 → 0.03 per second, relayouts 1.00 → 0 per second during monitoring.
+* **Update paths (Phase 6).** A *structural* change (engine state, button state, notice, page, size, DPI, a layout change) runs the full `relayout`: view, layout, every control moved/shown/enabled, the whole window and its children repainted. A *metrics-only* status (numbers and graphs) takes `refresh_metrics`: the view and layout are rebuilt; if the layout is unchanged, no control is moved, enabled or repainted and the sidebar is not redrawn. *Validated on Windows CI (run 36, commit `06e2997`):* owner-drawn control repaints 5.05 → 0.03 per second and relayouts 1.00 → 0 per second during monitoring.
+  * *Local, not yet run on Windows:* the fast path invalidates only the blocks that show live data (engine panel, tiles, cards, strip, table), and `paint` also skips the page header, notice and explanatory note when they are outside the update region. It will be kept only if the next Windows run shows a measurable gain (the soak's same-process A/B of the old and new update path measures it).
 * The Logs page repaints only when the viewer changed (or the page area, while paused, so the file status stays live).
 * The periodic status is logged at Trace, not Debug (about 2 KB of text per second with 6 adapters).
 * The only timer is a one-shot timer (7 s) armed when the window is closing. It bounds the wait for the engine's shutdown confirmation.

@@ -1,5 +1,7 @@
 # KALKAN Architecture
 
+*KALKAN — A Novera Labs Product. Engine: KOR — Kernel Operations Runtime.*
+
 ## Goals that shape the design
 
 1. **Lightweight.** Few dependencies, no async runtime unless it is justified, and no polling while idle.
@@ -21,7 +23,7 @@ kalkan/
 └── crates/
     ├── kalkan-app/      binary `kalkan`: argument parsing, wiring, startup/shutdown
     ├── kalkan-gui/      native Win32 UI: model/layout/theme (portable) + win32 (Windows)
-    ├── kalkan-core/     GoodBoyDPI engine (threads), lifecycle, Command/Event, EngineLink
+    ├── kalkan-core/     KOR engine (threads), lifecycle, Command/Event, EngineLink
     ├── kalkan-net/      read-only NetworkMonitor trait, counters, rate math
     ├── kalkan-config/   TOML schema, defaults, validation, atomic save, app dirs
     ├── kalkan-logging/  tracing subscriber, size-rotated log file, in-memory buffer, history
@@ -44,9 +46,12 @@ kalkan/
 * `kalkan-core`, `kalkan-net` and `kalkan-config` are platform independent and are unit tested on any OS.
 * `kalkan-win` pulls in the `windows` crate only under `cfg(windows)`.
 
-## The engine: GoodBoyDPI (`kalkan-core::engine`)
+## The engine: KOR — Kernel Operations Runtime (`kalkan-core::engine`)
 
-"GoodBoyDPI — Rust Core Engine" is the internal name of KALKAN's background engine. **Today it manages its own lifecycle and measures KALKAN's own CPU and memory use. It contains no DPI circumvention, packet capture or packet modification.**
+KOR is KALKAN's background engine. **Today it manages its own lifecycle, reads the Windows interface counters (read-only, `GetIfTable2`) and measures KALKAN's own CPU and memory use. It contains no DPI circumvention, packet capture, packet injection or packet modification.**
+
+* **User mode only.** KOR is a set of ordinary threads inside `kalkan.exe`. "Kernel" in *Kernel Operations Runtime* is part of the name; KOR does not run in Windows kernel mode, does not use or install a kernel driver, and is not a Windows kernel component.
+* **Naming status.** KOR was previously named *GoodBoyDPI*. The code still carries the legacy name: the engine panel shows `ENGINE_TITLE` = "GoodBoyDPI — Rust Core Engine", `ENGINE_NAME` = "GoodBoyDPI", the Settings help text says "Start GoodBoyDPI when KALKAN opens", and the worker thread is named `goodboydpi-core` (visible in log lines). This page uses the real identifiers where it names them. The code-level rename is planned and not done; no configuration key contains the old name.
 
 ### Threads
 
@@ -54,7 +59,7 @@ kalkan/
 |---|---|---|---|
 | UI (main) | app | Win32 message loop | `GetMessageW` |
 | `kalkan-engine` (controller) | app (spawned at start-up, joined at exit) | Sole owner of the `Lifecycle`. Turns commands and worker reports into events | `mpsc::Receiver::recv()` |
-| `goodboydpi-core` (worker) | from Start to Stop | Initialisation, then periodic process metrics | `recv_timeout(sample_interval)` on its control channel |
+| `goodboydpi-core` (worker; legacy thread name) | from Start to Stop | Initialisation, then periodic process metrics and network samples | `recv_timeout(sample_interval)` on its control channel |
 | `kalkan-log-history` | once at start-up, a few ms | Reads the tail (≤ 512 KiB) of the previous log into the viewer | exits when done; joined at shutdown |
 | `kalkan-io` | per Save / Reset / Export click | Writes `kalkan.toml` or an exported log file, so the UI never blocks on disk | exits after posting `WM_APP_IO`; joined at shutdown |
 
@@ -183,12 +188,15 @@ Measured with `kalkan --benchmark`, `kalkan --soak <minutes>` and
 in [PERFORMANCE.md](PERFORMANCE.md). The architecture was not changed:
 
 * The engine, monitor and tracker were already cheap (about 0.34 ms CPU per
-  1 s sample, 99 % of it in `GetIfTable2`). The only change there is the
-  tracker computing each interface's sort key once instead of per
-  comparison (same order).
-* The GUI kept its event-driven design (no timers, no polling). Metrics-only
-  updates now repaint only the blocks that show live data, without moving or
-  repainting child controls (see [GUI.md](GUI.md)).
+  1 s sample, 99 % of it in `GetIfTable2`; validated on Windows CI). The only
+  change there is the tracker computing each interface's sort key once
+  instead of per comparison (same order). *Measured on Linux only; not yet
+  run on Windows CI.*
+* The GUI kept its event-driven design (no periodic timers, no polling).
+  Metrics-only updates no longer move or repaint child controls and skip the
+  sidebar (*validated on Windows CI, run 36*). Repainting only the blocks
+  that show live data is the next step (*local, not yet run on Windows*);
+  see [GUI.md](GUI.md).
 * No unbounded collection was found: graph history is a fixed 60-sample
   ring, the log viewer a 5 000-entry ring, the tracker's maps are rebuilt
   from each snapshot (removed adapters are dropped), and engine threads are

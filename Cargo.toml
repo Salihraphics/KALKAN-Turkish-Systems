@@ -16,7 +16,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/salihraphics/kalkan"
+repository = "https://github.com/Salihraphics/KALKAN-Turkish-Systems"
 publish = false
 
 [workspace.dependencies]
