@@ -449,6 +449,9 @@ fn bench_logging(mon: &mut WinNetworkMonitor) {
             memory_bytes: Some(1),
             ..Default::default()
         });
+        let bytes = format!("{ev:?}").len();
+        println!("  Debug text of one Status event with the real interfaces: {bytes} bytes");
+        result("log.status_event_bytes", bytes as f64, "bytes");
         timed_rounds(
             "log.status_event_at_info",
             "debug!(?Status) at Info level",

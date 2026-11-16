@@ -289,6 +289,42 @@ impl WindowState {
         self.invalidate();
     }
 
+    /// A periodic metrics update on a live page. Rebuild the view; if the
+    /// layout did not change, repaint only the page area of the main window.
+    /// Child controls (sidebar entries, Start/Stop, page controls) show
+    /// nothing a metrics update changes, so they are neither moved nor
+    /// repainted. Anything else falls back to a full relayout.
+    fn refresh_metrics(&mut self) {
+        let t0 = Instant::now();
+        let old_panel = self.view.engine_panel;
+        self.view = page_view(self.ui.page, &self.ui, &self.info);
+        let (w, h) = self.client_size();
+        let layout = layout::compute(w, h, self.dpi, self.content());
+        if layout != self.layout || old_panel != self.view.engine_panel {
+            self.relayout();
+            return;
+        }
+        self.invalidate_content();
+        soak::METRIC_UPDATES.fetch_add(1, Ordering::Relaxed);
+        soak::RELAYOUT_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    /// Invalidate the page area (right of the sidebar), main window only.
+    fn invalidate_content(&self) {
+        let l = &self.layout;
+        let rc = RECT {
+            left: l.sidebar.right(),
+            top: 0,
+            right: l.client.right(),
+            bottom: l.client.bottom(),
+        };
+        // SAFETY: valid window handle; `rc` outlives the call. Without
+        // RDW_ALLCHILDREN (and with WS_CLIPCHILDREN) children are untouched.
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), Some(&rc), false);
+        }
+    }
+
     fn invalidate(&self) {
         // SAFETY: valid window handle; NULL region = whole window.
         unsafe {
@@ -312,9 +348,17 @@ impl WindowState {
         // Clear first: an event queued while draining posts a new wake-up.
         self.wake_pending.store(false, Ordering::Release);
         let (mut structural, mut metrics) = (false, false);
+        let buttons = (self.ui.can_start(), self.ui.can_stop());
         while let Some(ev) = self.engine.try_recv() {
-            tracing::debug!(?ev, "engine -> UI");
             let is_status = matches!(ev, kalkan_core::Event::Status(_));
+            // The periodic status (about 2 KB of text with 6 adapters, once
+            // per sample interval) only at Trace: at Debug it would fill the
+            // log file and the viewer buffer with data that is on screen.
+            if is_status {
+                tracing::trace!(?ev, "engine -> UI");
+            } else {
+                tracing::debug!(?ev, "engine -> UI");
+            }
             let changed = self.ui.apply(ev);
             if is_status {
                 metrics |= changed;
@@ -322,13 +366,18 @@ impl WindowState {
                 structural |= changed;
             }
         }
+        // Button state is derived from the engine state; if it changed, the
+        // controls must be updated too.
+        structural |= buttons != (self.ui.can_start(), self.ui.can_stop());
         // Periodic metric updates only repaint pages that show live data.
         let live_page = matches!(
             self.ui.page,
             Page::Dashboard | Page::Network | Page::Statistics
         );
-        if structural || (metrics && live_page) {
+        if structural {
             self.relayout();
+        } else if metrics && live_page {
+            self.refresh_metrics();
         }
         if self.closing && self.ui.shutdown_complete {
             tracing::info!("engine confirmed shutdown; closing the window");
@@ -808,7 +857,11 @@ fn handle_with_state(
                     let bmp = Gdi(CreateCompatibleBitmap(hdc, w, h).into());
                     let old = SelectObject(mem, bmp.0);
                     let t1 = Instant::now();
-                    st.paint(mem);
+                    let rc = ps.rcPaint;
+                    st.paint(
+                        mem,
+                        layout::Rect::new(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top),
+                    );
                     let t2 = Instant::now();
                     let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
                     soak::PAINT_SETUP_NS.fetch_add((t1 - t0).as_nanos() as u64, Ordering::Relaxed);

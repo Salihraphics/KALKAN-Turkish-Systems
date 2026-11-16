@@ -44,7 +44,10 @@ pub(super) static PAINT_NS: AtomicU64 = AtomicU64::new(0);
 pub(super) static DRAW_ITEMS: AtomicU64 = AtomicU64::new(0);
 pub(super) static DRAW_ITEM_NS: AtomicU64 = AtomicU64::new(0);
 pub(super) static RELAYOUTS: AtomicU64 = AtomicU64::new(0);
+/// Time in relayout() and refresh_metrics() together.
 pub(super) static RELAYOUT_NS: AtomicU64 = AtomicU64::new(0);
+/// Metrics updates handled without a relayout (refresh_metrics fast path).
+pub(super) static METRIC_UPDATES: AtomicU64 = AtomicU64::new(0);
 // WM_PAINT breakdown: back-buffer setup, drawing, BitBlt to the window.
 pub(super) static PAINT_SETUP_NS: AtomicU64 = AtomicU64::new(0);
 pub(super) static PAINT_DRAW_NS: AtomicU64 = AtomicU64::new(0);
@@ -88,6 +91,7 @@ struct Counters {
     draw_item_ns: u64,
     relayouts: u64,
     relayout_ns: u64,
+    metric_updates: u64,
 }
 
 fn counters() -> Counters {
@@ -98,6 +102,7 @@ fn counters() -> Counters {
         draw_item_ns: DRAW_ITEM_NS.load(Ordering::Relaxed),
         relayouts: RELAYOUTS.load(Ordering::Relaxed),
         relayout_ns: RELAYOUT_NS.load(Ordering::Relaxed),
+        metric_updates: METRIC_UPDATES.load(Ordering::Relaxed),
     }
 }
 
@@ -114,6 +119,7 @@ struct Minute {
     relayouts_per_s: f64,
     gui_ms_per_s: f64,
     relayout_ms_per_s: f64,
+    metric_updates_per_s: f64,
     ping_p50_ms: f64,
     ping_p99_ms: f64,
     ping_max_ms: f64,
@@ -290,6 +296,7 @@ pub(super) fn soak(
                 / 1e6
                 / wall,
             relayout_ms_per_s: (c1.relayout_ns - c0.relayout_ns) as f64 / 1e6 / wall,
+            metric_updates_per_s: (c1.metric_updates - c0.metric_updates) as f64 / wall,
             ping_p50_ms: pct(&pings, 50),
             ping_p99_ms: pct(&pings, 99),
             ping_max_ms: pct(&pings, 100),
@@ -372,7 +379,7 @@ fn format_row(m: &Minute) -> String {
             )
         });
     format!(
-        "min {:>2} {:<31} {} cpu {:6.3} % | ws {:6.2} MiB private {:6.2} MiB | handles {} gdi {} user {} threads {} | paints {:5.2}/s drawitems {:6.2}/s relayouts {:5.2}/s ({:.3} ms/s) gui {:6.3} ms/s | input latency p50 {:.2} p99 {:.2} max {:.2} ms | log entries {}",
+        "min {:>2} {:<31} {} cpu {:6.3} % | ws {:6.2} MiB private {:6.2} MiB | handles {} gdi {} user {} threads {} | paints {:5.2}/s drawitems {:6.2}/s relayouts {:5.2}/s + fast updates {:4.2}/s ({:.3} ms/s) gui {:6.3} ms/s | input latency p50 {:.2} p99 {:.2} max {:.2} ms | log entries {}",
         m.index,
         m.activity,
         if m.ok { "ok  " } else { "FAIL" },
@@ -386,6 +393,7 @@ fn format_row(m: &Minute) -> String {
         m.paints_per_s,
         m.draw_items_per_s,
         m.relayouts_per_s,
+        m.metric_updates_per_s,
         m.relayout_ms_per_s,
         m.gui_ms_per_s,
         m.ping_p50_ms,

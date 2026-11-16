@@ -587,9 +587,14 @@ impl WindowState {
             .log
             .refresh(buffer.version(), || buffer.snapshot())
         {
+            // sync_list re-lays out and repaints.
             self.sync_list(at_end);
+        } else if self.pages.log.paused {
+            // The view is frozen, but the status line (file size, rotation
+            // state) is live: repaint the page area only.
+            self.invalidate_content();
         }
-        self.invalidate();
+        // Unchanged and not paused: nothing on screen changed.
     }
 
     /// Push the filtered row count and selection into the virtual list box.

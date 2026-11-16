@@ -792,18 +792,27 @@ impl Painter<'_> {
 // ── Window painting ──────────────────────────────────────────────────────────
 
 impl WindowState {
-    pub(super) fn paint(&self, hdc: HDC) {
+    /// Paint the window into `hdc`. `dirty` is the update region's bounding
+    /// box: the sidebar is skipped when it is outside it (metrics updates
+    /// invalidate only the page area).
+    pub(super) fn paint(&self, hdc: HDC, dirty: Rect) {
         let p = Painter {
             hdc,
             dpi: self.dpi,
             fonts: &self.fonts,
         };
         let l = &self.layout;
-        let s = |d| p.s(d);
 
         p.fill(l.client, theme::BG);
+        if l.sidebar.intersects(&dirty) {
+            self.paint_sidebar(&p);
+        }
+        self.paint_content(&p);
+    }
 
-        // Sidebar
+    fn paint_sidebar(&self, p: &Painter) {
+        let l = &self.layout;
+        let s = |d| p.s(d);
         p.fill(l.sidebar, theme::SIDEBAR);
         p.fill(
             Rect::new(l.sidebar.right() - 1, 0, 1, l.sidebar.h),
@@ -841,7 +850,11 @@ impl WindowState {
             &self.fonts.small,
             theme::TEXT_MUTED,
         );
+    }
 
+    fn paint_content(&self, p: &Painter) {
+        let l = &self.layout;
+        let s = |d| p.s(d);
         // Header
         let h = l.header;
         p.line(
@@ -874,7 +887,7 @@ impl WindowState {
         }
 
         if let Some(r) = l.engine_panel {
-            self.paint_engine_panel(&p, r);
+            self.paint_engine_panel(p, r);
         }
         for (tile, r) in self.view.tiles.iter().zip(&l.tiles) {
             p.tile(tile, *r, &self.ui.history);
@@ -888,7 +901,7 @@ impl WindowState {
         if let (Some(r), Some(t)) = (l.table, &self.view.table) {
             p.table(t, r, l.table_rows_visible);
         }
-        self.paint_pages(&p);
+        self.paint_pages(p);
         if let (Some(r), Some(note)) = (l.note, &self.view.note) {
             p.text(
                 note,
