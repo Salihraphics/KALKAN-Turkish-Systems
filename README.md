@@ -42,7 +42,7 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 
 ### Screenshots
 
-Captured automatically by `kalkan --self-test` on the Windows CI runner (CI run 15). The traffic is real and low, because the runner is idle:
+Captured automatically by `kalkan --self-test` on the Windows CI runner (CI run 20). The traffic is real and low, because the runner is idle:
 
 <p align="center">
   <img src="docs/screenshots/dashboard-running.png" width="720" alt="Dashboard: GoodBoyDPI running, live download/upload/CPU/memory cards, active interface strip" />
@@ -89,7 +89,7 @@ KALKAN reads the interface counters Windows already keeps, using IP Helper `GetI
 | GoodBoyDPI engine: controller and worker threads, lifecycle, Start/Stop/QueryStatus/Shutdown, errors, panics, bounded shutdown, no orphaned threads | ✅ | 36 engine tests, repeated 25× per CI build on Windows |
 | **Read-only network monitoring:** interfaces, rates, totals, peaks, adapter changes, resets, filter/virtual/same-MAC de-duplication | ✅ | 15 tracker tests with simulated adapters, 7 Windows-side classification tests, a real `GetIfTable2` test on Windows, and the CI end-to-end check: a 5,000,000-byte download made the counted bytes grow by 5,054,232 (1.01×; the rest is background traffic) |
 | Process metrics (KALKAN's own CPU and working set) | ✅ | Windows unit test and self-test |
-| **Refined native GUI:** teal design tokens, line icons, state pill, hover and hand cursor, runtime window icon, live Dashboard, Network page with graphs and interface table, Statistics, Logs, Settings | ✅ | 31 model/layout/theme tests (including WCAG AA contrast for every text/surface pair, and every page fitting at minimum size at 96 to 192 DPI), plus the **47-check** `--self-test`, run 3× per CI build |
+| **Refined native GUI:** teal design tokens, line icons, state pill, hover and hand cursor, logo window and taskbar icon, live Dashboard, Network page with graphs and interface table, Statistics, Logs, Settings | ✅ | 56 GUI unit tests: model, layout, theme, log view, settings form, logo (including WCAG AA contrast for every text/surface pair, and every page fitting at minimum size at 96 to 192 DPI), plus the **63-check** `--self-test`, run 3× per CI build |
 | Display scaling | ⚠️ partial | Layout is unit-tested at 96, 120, 144, 168 and 192 DPI. On Windows, the real DPI-change code path was exercised by sending `WM_DPICHANGED` (150 %, screenshot above). The runner's display itself is 96 DPI, so a real high-DPI monitor has not been tested |
 | **Log rotation and retention:** size limit, numbered archives, retention, never deleting the active or unrelated files, restart, rename failure, concurrent writers, shutdown while logging | ✅ | 20 `kalkan-logging` tests (rotation, buffer, parsing, history, runtime reload), repeated 40× locally without a failure |
 | **Logs page:** real entries, level chips, search, pause/resume, copy, export, file status | ✅ | 8 `logview` tests and the self-test on Windows (clipboard and exported file compared byte-for-byte) |
