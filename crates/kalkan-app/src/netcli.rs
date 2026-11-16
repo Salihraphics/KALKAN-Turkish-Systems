@@ -287,16 +287,20 @@ pub fn run_benchmark(config: &Config, spec: kalkan_core::EngineSpec) -> ExitCode
     // ── Many adapters (SIMULATED snapshots, tracker only) ────────────────
     for n in [1usize, 8, 32, 128] {
         let mut tracker = NetTracker::new();
-        let mut tick = 0u64;
+        // Built once, outside the timed loop: only the tracker is measured.
+        // Counters advance in place like a real monitor's would.
+        let mut s = synthetic_snapshot(n, 1);
         timed_rounds(
             &format!("net.tracker_sim{n}"),
             &format!("tracker update, {n} simulated interfaces"),
             ROUNDS,
             N / 2,
             || {
-                tick += 1;
-                let mut s = synthetic_snapshot(n, tick);
-                s.at += Duration::from_secs(tick);
+                s.at += Duration::from_secs(1);
+                for (k, i) in s.interfaces.iter_mut().enumerate() {
+                    i.rx_bytes += 1000 + k as u64 * 37;
+                    i.tx_bytes += 300 + k as u64 * 11;
+                }
                 let _ = std::hint::black_box(tracker.update(&s));
             },
         );
