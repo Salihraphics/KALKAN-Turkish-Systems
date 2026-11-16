@@ -1,0 +1,31 @@
+[package]
+name = "kalkan-win"
+description = "KALKAN Windows integration: privileges, process metrics, console attach, read-only network interface counters."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+kalkan-net.workspace = true
+
+[target.'cfg(windows)'.dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",  # GetIfTable2 (read-only counters)
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp", # thread count (benchmarks, soak test)
+    "Win32_System_Registry",             # CPU name for benchmark reports
+    "Win32_System_SystemInformation",
+    "Wdk_System_SystemServices",         # RtlGetVersion: real Windows build number
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+]
+
+[lints]
+workspace = true

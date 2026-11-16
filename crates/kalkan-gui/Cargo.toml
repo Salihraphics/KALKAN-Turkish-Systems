@@ -1,0 +1,42 @@
+[package]
+name = "kalkan-gui"
+description = "KALKAN native Win32 user interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+kalkan-core.workspace = true
+# Settings form validation uses the loader's own rules; the log viewer reads
+# the in-memory log buffer. Both crates are platform independent.
+kalkan-config.workspace = true
+kalkan-logging.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The simulated long-run test drives the engine with a scripted monitor.
+kalkan-net.workspace = true
+
+[target.'cfg(windows)'.dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",             # DwmFlush (self-test screenshots)
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_Xps",              # PrintWindow (self-test screenshots)
+    "Win32_System_DataExchange",      # clipboard (copy log entry)
+    "Win32_System_Memory",            # GlobalAlloc for clipboard data
+    "Win32_System_LibraryLoader",     # GetModuleHandleW
+    "Win32_UI_Controls",              # DRAWITEMSTRUCT, owner-draw states
+    "Win32_UI_Controls_Dialogs",      # Save As dialog (log export)
+    "Win32_UI_HiDpi",                 # per-monitor DPI awareness
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[lints]
+workspace = true

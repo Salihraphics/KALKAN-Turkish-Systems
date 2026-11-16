@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows (MSVC) — build, lint, test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo build --release
+      - name: Engine tests repeated (race detection on Windows threads)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test -p kalkan-core --release --no-run
+          for ($i = 1; $i -le 25; $i++) {
+            cargo test -q -p kalkan-core --release
+            if ($LASTEXITCODE -ne 0) { throw "engine tests failed on repetition $i" }
+          }
+          Write-Host "engine tests: 25 repetitions passed"
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Run kalkan.exe, show its output, and fail unless the exit code matches.
+          function Invoke-Kalkan([int]$Expect, [string[]]$KArgs) {
+            $p = Start-Process -FilePath ./target/release/kalkan.exe -ArgumentList $KArgs `
+                 -Wait -PassThru -NoNewWindow `
+                 -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+            Get-Content out.txt, err.txt
+            if ($p.ExitCode -ne $Expect) {
+              throw "kalkan $($KArgs -join ' ') exited with $($p.ExitCode), expected $Expect"
+            }
+          }
+          Invoke-Kalkan 0 @('--version')
+          Invoke-Kalkan 0 @('--print-default-config')
+          Copy-Item out.txt kalkan.toml
+          Invoke-Kalkan 0 @('--config', 'kalkan.toml', '--check-config')
+          Set-Content bad.toml "[monitor]`nsample_interval_ms = 5"
+          Invoke-Kalkan 1 @('--config', 'bad.toml', '--check-config')
+          Invoke-Kalkan 2 @('--no-such-flag')
+          Invoke-Kalkan 2 @('--screenshots', 'x')
+      - name: Real network counters (interfaces, 5 MB download check)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Get-Counters {
+            $out = & ./target/release/kalkan.exe --interfaces | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "kalkan --interfaces failed" }
+            Write-Host $out
+            [pscustomobject]@{
+              Rx = [uint64]([regex]::Match($out, 'TOTAL_RX=(\d+)').Groups[1].Value)
+              Counted = [int]([regex]::Match($out, 'COUNTED=(\d+)').Groups[1].Value)
+            }
+          }
+          $before = Get-Counters
+          if ($before.Counted -lt 1) { throw "no counted (connected hardware) interface found" }
+          $bytes = 5000000
+          try {
+            Invoke-WebRequest -Uri "https://speed.cloudflare.com/__down?bytes=$bytes" -OutFile dl.bin -TimeoutSec 60
+          } catch {
+            Write-Host "::warning::download for the counter check failed ($_); skipping the delta assertion"
+            exit 0
+          }
+          $got = (Get-Item dl.bin).Length
+          $after = Get-Counters
+          $delta = $after.Rx - $before.Rx
+          Write-Host "downloaded $got bytes; counted receive bytes grew by $delta"
+          if ($delta -lt $got) { throw "receive counters grew by $delta bytes, less than the $got bytes downloaded" }
+          # Upper bound catches double counting (CI run 13 saw exactly 2x before
+          # same-MAC de-duplication). Allows some unrelated background traffic.
+          $limit = [uint64]($got * 1.5)
+          if ($delta -gt $limit) { throw "receive counters grew by $delta bytes, more than 1.5x the $got bytes downloaded: double counting?" }
+      - name: Simulated long-run test (adapter churn, API failures, log flood)
+        run: cargo test -p kalkan-gui --release --test soak_sim -- --nocapture
+      - name: Benchmark (monitoring, logging and engine overhead)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Start-Process -FilePath ./target/release/kalkan.exe -ArgumentList @('--config', 'missing.toml', '--benchmark') `
+               -Wait -PassThru -NoNewWindow -RedirectStandardOutput benchmark.txt -RedirectStandardError benchmark-err.txt
+          Get-Content benchmark.txt, benchmark-err.txt
+          if ($p.ExitCode -ne 0) { throw "benchmark failed with exit code $($p.ExitCode)" }
+      - name: GUI self-test (real window, scripted clicks, screenshots)
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Start-Process -FilePath ./target/release/kalkan.exe `
+               -ArgumentList @('--config', 'missing.toml', '--self-test', '--screenshots', 'screenshots') `
+               -Wait -PassThru -NoNewWindow `
+               -RedirectStandardOutput selftest.txt -RedirectStandardError selftest-err.txt
+          Get-Content selftest.txt, selftest-err.txt
+          if ($p.ExitCode -ne 0) { throw "GUI self-test failed with exit code $($p.ExitCode)" }
+          # Repeat without screenshots to catch intermittent lifecycle bugs.
+          # Run 2 starts from the file run 1 saved; run 3 starts from an
+          # INVALID file (defaults in use, .bak kept when settings are saved).
+          Set-Content invalid.toml "[monitor]`nsample_interval_ms = 5"
+          for ($i = 2; $i -le 3; $i++) {
+            $cfg = if ($i -eq 3) { 'invalid.toml' } else { 'missing.toml' }
+            $p = Start-Process -FilePath ./target/release/kalkan.exe `
+                 -ArgumentList @('--config', $cfg, '--self-test') `
+                 -Wait -PassThru -NoNewWindow `
+                 -RedirectStandardOutput "selftest-$i.txt" -RedirectStandardError "selftest-err-$i.txt"
+            Select-String -Path "selftest-$i.txt" -Pattern '^result:'
+            if ($p.ExitCode -ne 0) { Get-Content "selftest-$i.txt"; throw "GUI self-test run $i failed" }
+          }
+          if (-not (Test-Path invalid.toml.bak)) { throw "invalid config was not backed up before saving" }
+          Write-Host "invalid.toml.bak:"; Get-Content invalid.toml.bak
+      - name: Short soak (2 minutes; the 30-minute soak is a separate job)
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Start-Process -FilePath ./target/release/kalkan.exe `
+               -ArgumentList @('--config', 'soak.toml', '--soak', '2') `
+               -Wait -PassThru -NoNewWindow `
+               -RedirectStandardOutput soak-short.txt -RedirectStandardError soak-short-err.txt
+          Get-Content soak-short.txt | Select-String -NotMatch '^R soak.m'
+          if ($p.ExitCode -ne 0) { throw "short soak failed with exit code $($p.ExitCode)" }
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: gui-screenshots
+          path: |
+            screenshots/
+            selftest.txt
+            selftest-err.txt
+            benchmark.txt
+            soak-short.txt
+      - uses: actions/upload-artifact@v5
+        with:
+          name: kalkan-windows-x64
+          path: target/release/kalkan.exe
+
+  soak:
+    # 30 minutes with the real window, engine, monitor and log file. Runs in
+    # parallel with the main job, on pushes only (not twice per PR update).
+    if: github.event_name == 'push'
+    name: Windows soak test (30 min, real window)
+    runs-on: windows-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - name: Soak (30 minutes)
+        shell: pwsh
+        timeout-minutes: 40
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Start-Process -FilePath ./target/release/kalkan.exe `
+               -ArgumentList @('--config', 'soak.toml', '--soak', '30') `
+               -Wait -PassThru -NoNewWindow `
+               -RedirectStandardOutput soak.txt -RedirectStandardError soak-err.txt
+          Get-Content soak.txt
+          Write-Host "--- log files ---"
+          Get-ChildItem "$env:LOCALAPPDATA\Kalkan\logs" | Format-Table Name, Length
+          if ($p.ExitCode -ne 0) { throw "soak test failed with exit code $($p.ExitCode)" }
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: soak-report
+          path: |
+            soak.txt
+            soak-err.txt
+
+  linux:
+    name: Linux — platform-independent crates + Windows cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+          components: clippy
+      - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+      - run: cargo build --release --target x86_64-pc-windows-gnu
