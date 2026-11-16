@@ -176,6 +176,25 @@ While the engine is stopped, two threads exist: the UI and the controller. The c
 * Settings that apply immediately: log level, file size limit, archives kept. Sample interval applies at the next engine start (`SetSampleInterval`). File logging on/off, start engine on launch and start minimized apply at the next launch. The save confirmation names every changed setting that applies later.
 * `start_engine_on_launch` defaults to `false`, so the engine does nothing until the user presses Start. If it is set to `true`, the GUI sends Start right after its window is created.
 
+## Performance (Phase 6)
+
+Measured with `kalkan --benchmark`, `kalkan --soak <minutes>` and
+`crates/kalkan-gui/tests/soak_sim.rs`; methodology, numbers and limits are
+in [PERFORMANCE.md](PERFORMANCE.md). The architecture was not changed:
+
+* The engine, monitor and tracker were already cheap (about 0.34 ms CPU per
+  1 s sample, 99 % of it in `GetIfTable2`). The only change there is the
+  tracker computing each interface's sort key once instead of per
+  comparison (same order).
+* The GUI kept its event-driven design (no timers, no polling). Metrics-only
+  updates now repaint only the blocks that show live data, without moving or
+  repainting child controls (see [GUI.md](GUI.md)).
+* No unbounded collection was found: graph history is a fixed 60-sample
+  ring, the log viewer a 5 000-entry ring, the tracker's maps are rebuilt
+  from each snapshot (removed adapters are dropped), and engine threads are
+  joined on Stop. Heap, handles, GDI/USER objects and threads were flat in
+  30-minute soaks and simulated long runs.
+
 ## Extension points (Phase 7, research only)
 
 Packet-processing features, such as DPI compatibility work, would live in a **separate crate** behind a separate trait. They would be off by default, need an explicit user action in Settings, and need explicit administrator consent if a driver is involved. The GUI would see them only through new `Command`/`Event` variants. Nothing in Phases 1–6 installs drivers, changes system networking or touches security software.

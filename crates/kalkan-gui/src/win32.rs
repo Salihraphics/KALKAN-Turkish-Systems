@@ -304,9 +304,41 @@ impl WindowState {
             self.relayout();
             return;
         }
-        self.invalidate_content();
+        self.invalidate_live_blocks();
         soak::METRIC_UPDATES.fetch_add(1, Ordering::Relaxed);
         soak::RELAYOUT_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    /// Invalidate only the blocks that show live data (engine panel, tiles,
+    /// cards, strip, table), main window only. The page title, notice and
+    /// explanatory note do not change with metrics.
+    fn invalidate_live_blocks(&self) {
+        let l = &self.layout;
+        let blocks = l
+            .engine_panel
+            .iter()
+            .chain(&l.tiles)
+            .chain(&l.cards)
+            .chain(l.strip.iter())
+            .chain(l.table.iter());
+        let mut any = false;
+        for r in blocks {
+            any = true;
+            let rc = RECT {
+                left: r.x,
+                top: r.y,
+                right: r.right(),
+                bottom: r.bottom(),
+            };
+            // SAFETY: valid window handle; `rc` outlives the call. Without
+            // RDW_ALLCHILDREN (and with WS_CLIPCHILDREN) children are untouched.
+            unsafe {
+                let _ = InvalidateRect(Some(self.hwnd), Some(&rc), false);
+            }
+        }
+        if !any {
+            self.invalidate_content();
+        }
     }
 
     /// Invalidate the page area (right of the sidebar), main window only.

@@ -337,13 +337,9 @@ impl NetTracker {
             self.peak_rx = self.peak_rx.max(r);
             self.peak_tx = self.peak_tx.max(t);
         }
-        interfaces.sort_by(|a, b| {
-            (!a.counted, !a.connected, a.name.to_lowercase()).cmp(&(
-                !b.counted,
-                !b.connected,
-                b.name.to_lowercase(),
-            ))
-        });
+        // Same order as before; the lower-cased name is computed once per
+        // interface instead of twice per comparison.
+        interfaces.sort_by_cached_key(|i| (!i.counted, !i.connected, i.name.to_lowercase()));
         changes.sort_by_key(|c| c.message());
 
         let status = NetworkStatus {

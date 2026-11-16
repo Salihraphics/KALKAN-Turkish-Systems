@@ -804,10 +804,20 @@ impl WindowState {
         let l = &self.layout;
 
         p.fill(l.client, theme::BG);
+        let mut t = std::time::Instant::now();
+        let mut lap = |block: usize| {
+            let now = std::time::Instant::now();
+            super::soak::PAINT_BLOCK_NS[block].fetch_add(
+                (now - t).as_nanos() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            t = now;
+        };
         if l.sidebar.intersects(&dirty) {
             self.paint_sidebar(&p);
         }
-        self.paint_content(&p);
+        lap(0);
+        self.paint_content(&p, dirty, &mut lap);
     }
 
     fn paint_sidebar(&self, p: &Painter) {
@@ -852,10 +862,55 @@ impl WindowState {
         );
     }
 
-    fn paint_content(&self, p: &Painter) {
+    /// The page area. Blocks outside `dirty` are skipped: a metrics update
+    /// invalidates only the blocks that show live data, so the static
+    /// header and the explanatory note are not redrawn every second.
+    fn paint_content(&self, p: &Painter, dirty: Rect, lap: &mut impl FnMut(usize)) {
+        let l = &self.layout;
+        let header_dirty =
+            l.header.intersects(&dirty) || l.notice.is_some_and(|r| r.intersects(&dirty));
+        if header_dirty {
+            self.paint_header(p);
+        }
+        lap(1);
+        if let Some(r) = l.engine_panel {
+            self.paint_engine_panel(p, r);
+        }
+        lap(2);
+        for (tile, r) in self.view.tiles.iter().zip(&l.tiles) {
+            p.tile(tile, *r, &self.ui.history);
+        }
+        lap(3);
+        for (card, r) in self.view.cards.iter().zip(&l.cards) {
+            p.card(card, *r);
+        }
+        lap(4);
+        if let Some(r) = l.strip {
+            p.strip(&self.view.strip, r);
+        }
+        lap(5);
+        if let (Some(r), Some(t)) = (l.table, &self.view.table) {
+            p.table(t, r, l.table_rows_visible);
+        }
+        lap(6);
+        self.paint_pages(p);
+        if let (Some(r), Some(note)) = (l.note, &self.view.note) {
+            if r.intersects(&dirty) {
+                p.text(
+                    note,
+                    r,
+                    &self.fonts.small,
+                    theme::TEXT_MUTED,
+                    DT_LEFT | DT_WORDBREAK,
+                );
+            }
+        }
+        lap(7);
+    }
+
+    fn paint_header(&self, p: &Painter) {
         let l = &self.layout;
         let s = |d| p.s(d);
-        // Header
         let h = l.header;
         p.line(
             self.ui.page.label(),
@@ -883,32 +938,6 @@ impl WindowState {
                 Rect::new(r.x + s(16), r.y, r.w - s(24), r.h),
                 &self.fonts.body,
                 theme::TEXT,
-            );
-        }
-
-        if let Some(r) = l.engine_panel {
-            self.paint_engine_panel(p, r);
-        }
-        for (tile, r) in self.view.tiles.iter().zip(&l.tiles) {
-            p.tile(tile, *r, &self.ui.history);
-        }
-        for (card, r) in self.view.cards.iter().zip(&l.cards) {
-            p.card(card, *r);
-        }
-        if let Some(r) = l.strip {
-            p.strip(&self.view.strip, r);
-        }
-        if let (Some(r), Some(t)) = (l.table, &self.view.table) {
-            p.table(t, r, l.table_rows_visible);
-        }
-        self.paint_pages(p);
-        if let (Some(r), Some(note)) = (l.note, &self.view.note) {
-            p.text(
-                note,
-                r,
-                &self.fonts.small,
-                theme::TEXT_MUTED,
-                DT_LEFT | DT_WORDBREAK,
             );
         }
     }

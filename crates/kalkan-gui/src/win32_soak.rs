@@ -46,6 +46,19 @@ pub(super) static DRAW_ITEM_NS: AtomicU64 = AtomicU64::new(0);
 pub(super) static RELAYOUTS: AtomicU64 = AtomicU64::new(0);
 /// Time in relayout() and refresh_metrics() together.
 pub(super) static RELAYOUT_NS: AtomicU64 = AtomicU64::new(0);
+/// Paint time per block: sidebar, header+notice, engine panel, tiles, cards,
+/// strip, table, note+page controls.
+pub(super) static PAINT_BLOCK_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+pub(super) const PAINT_BLOCKS: [&str; 8] = [
+    "sidebar",
+    "header",
+    "engine_panel",
+    "tiles",
+    "cards",
+    "strip",
+    "table",
+    "note_pages",
+];
 /// Metrics updates handled without a relayout (refresh_metrics fast path).
 pub(super) static METRIC_UPDATES: AtomicU64 = AtomicU64::new(0);
 // WM_PAINT breakdown: back-buffer setup, drawing, BitBlt to the window.
@@ -210,6 +223,62 @@ pub(super) fn soak(
         note(&mut r, format!("soak: paint {key}: {ms:.3} ms per frame (n={N}): back buffer {setup:.3}, drawing {draw:.3}, blit {blit:.3}, owner-drawn controls {items:.3} ms"));
         note(&mut r, format!("R soak.paint.{key}_ms {ms:.4} ms"));
         note(&mut r, format!("R soak.paint.{key}_draw_ms {draw:.4} ms"));
+    }
+
+    // ── One metrics update: the previous path vs the current one ─────────
+    // Same process, same window, same data, so the comparison does not
+    // depend on how fast the CI machine happens to be. Previous path: full
+    // relayout (every control moved/shown, whole window and all children
+    // invalidated). Current path: refresh_metrics (live blocks only).
+    for (key, previous) in [
+        ("update_previous_path", true),
+        ("update_current_path", false),
+    ] {
+        const N: u32 = 200;
+        let blocks = || {
+            PAINT_BLOCK_NS
+                .iter()
+                .map(|a| a.load(Ordering::Relaxed))
+                .collect::<Vec<_>>()
+        };
+        let (b0, i0, p0) = (
+            blocks(),
+            DRAW_ITEMS.load(Ordering::Relaxed),
+            PAINTS.load(Ordering::Relaxed),
+        );
+        let t0 = Instant::now();
+        for _ in 0..N {
+            with_state_mut(hwnd, |s| {
+                if previous {
+                    s.relayout();
+                } else {
+                    s.refresh_metrics();
+                }
+            });
+            // SAFETY: process the pending paints of our window and its
+            // children now; no borrow is held.
+            unsafe {
+                let _ = RedrawWindow(Some(hwnd), None, None, RDW_UPDATENOW | RDW_ALLCHILDREN);
+            }
+        }
+        let ms = t0.elapsed().as_secs_f64() * 1e3 / N as f64;
+        let b1 = blocks();
+        let per_block: Vec<String> = PAINT_BLOCKS
+            .iter()
+            .zip(b0.iter().zip(&b1))
+            .map(|(name, (a, b))| format!("{name} {:.3}", (b - a) as f64 / 1e6 / N as f64))
+            .collect();
+        let items = (DRAW_ITEMS.load(Ordering::Relaxed) - i0) as f64 / N as f64;
+        let paints = (PAINTS.load(Ordering::Relaxed) - p0) as f64 / N as f64;
+        note(
+            &mut r,
+            format!(
+                "soak: {key}: {ms:.3} ms per update (n={N}); {paints:.2} main paints and {items:.2} owner-drawn controls per update; drawing per block (ms): {}",
+                per_block.join(", ")
+            ),
+        );
+        note(&mut r, format!("R soak.{key}_ms {ms:.4} ms"));
+        note(&mut r, format!("R soak.{key}_draw_items {items:.2}"));
     }
 
     // ── Input-latency probe ──────────────────────────────────────────────

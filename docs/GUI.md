@@ -148,9 +148,12 @@ All colours and sizes come from `theme.rs`. There are no gradients, shadows or a
 
 ## Resource use
 
-* `GetMessageW` blocks, and the GUI has no periodic timers, so the UI uses no CPU while idle. While the engine is Running, the UI wakes once per sample interval (default 1 s) to show new metrics. While Stopped, nothing wakes it. This follows from the design. It has not been measured yet; that is Phase 6.
+* `GetMessageW` blocks, and the GUI has no periodic timers, so the UI uses no CPU while idle. While the engine is Running, the UI wakes once per sample interval (default 1 s) to show new metrics. While Stopped, nothing wakes it. Measured in Phase 6: see [PERFORMANCE.md](PERFORMANCE.md).
+* **Update paths (Phase 6).** A *structural* change (engine state, button state, notice, page, size, DPI, a layout change) runs the full `relayout`: view, layout, every control moved/shown/enabled, the whole window and its children repainted. A *metrics-only* status (numbers and graphs) takes `refresh_metrics`: the view and layout are rebuilt; if the layout is unchanged, only the blocks that show live data (engine panel, tiles, cards, strip, table) of the main window are invalidated. No control is touched, and `paint` skips the sidebar, header and explanatory note when they are outside the update region. Measured effect: owner-drawn control repaints 5.05 → 0.03 per second, relayouts 1.00 → 0 per second during monitoring.
+* The Logs page repaints only when the viewer changed (or the page area, while paused, so the file status stays live).
+* The periodic status is logged at Trace, not Debug (about 2 KB of text per second with 6 adapters).
 * The only timer is a one-shot timer (7 s) armed when the window is closing. It bounds the wait for the engine's shutdown confirmation.
-* The back buffer is created per `WM_PAINT` and freed immediately. Nothing is cached while idle.
+* The back buffer is created per `WM_PAINT` and freed immediately. Nothing is cached while idle. Caching it was considered and rejected in Phase 6: it is 0.04 ms of a 2.3 ms frame (1.6 %).
 * Brushes are created per draw call and released at once. Fonts are created once per DPI.
 * The self-test prints the working set, peak working set and private bytes after the scripted run. These numbers are a point-in-time observation, not a benchmark.
 

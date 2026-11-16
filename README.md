@@ -37,7 +37,7 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 | 3 | Core engine lifecycle: GoodBoyDPI (threaded) | ✅ Done |
 | 4 | Read-only network monitoring and UI refinement | ✅ Done |
 | 5 | Logging (files, rotation, in-app view) and configuration UI | ✅ Done |
-| 6 | Performance benchmarking | ⏳ Next |
+| 6 | Performance measurement and optimization | 🔧 In progress (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md)) |
 | 7 | DPI research and controlled integration planning | 🔬 Research |
 
 ### Screenshots
@@ -172,7 +172,8 @@ kalkan                                   # open the window
 kalkan --config my.toml                  # open the window with another config file
 kalkan --check-config                    # validate the config and exit
 kalkan --interfaces                      # list network interfaces and counters
-kalkan --benchmark                       # measure monitoring overhead (~25 s)
+kalkan --benchmark                       # measure monitoring, logging and engine overhead (~2 min)
+kalkan --soak 30                         # 30-minute soak test with the real window (used by CI)
 kalkan --print-default-config > kalkan.toml
 kalkan --self-test --screenshots shots   # scripted UI check (used by CI)
 ```
@@ -187,7 +188,7 @@ Performance is a requirement, not an afterthought:
 
 - No background polling while idle, and no async runtime unless it is justified. The GUI sleeps in `GetMessageW` and uses no timers.
 - Monitoring is read-only. It reads OS counters and does no packet processing.
-- Phase 6 will measure CPU, memory, latency and jitter. **We do not claim performance numbers until they are measured.**
+- Phase 6 measures CPU, memory, handles, input latency and paint work with `kalkan --benchmark`, `kalkan --soak <minutes>` and a simulated long-run test. Results, methodology and limits are in **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**. On the GitHub Actions Windows VM (not desktop hardware): network monitoring costs about 0.34 ms CPU per 1 s sample; with the live Network page open the whole app stayed below 1 % of one core in every steady minute of three 30-minute soaks; memory, handles and threads were flat; input latency p99 was 0.2 ms. **We do not claim numbers for real desktop hardware until they are measured there.**
 
 ## 🔐 Security and transparency
 
