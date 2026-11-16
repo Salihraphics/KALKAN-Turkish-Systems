@@ -1,6 +1,6 @@
 # KALKAN Performance (Phase 6, in progress)
 
-*KALKAN — A Novera Labs Product. Engine: KOR — Kernel Operations Runtime (user mode; legacy name GoodBoyDPI).*
+*KALKAN — A Novera Labs Product. Engine: KOR — Kernel Operations Runtime (user mode; previously GoodBoyDPI).*
 
 ## Validation status at a glance
 

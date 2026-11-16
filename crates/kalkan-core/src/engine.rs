@@ -1,12 +1,18 @@
-//! GoodBoyDPI — the KALKAN background engine.
+//! KOR — Kernel Operations Runtime: the KALKAN background engine.
 //!
-//! **Scope (Phase 3):** lifecycle management and real process metrics only.
-//! No DPI circumvention, packet capture or packet modification exists.
+//! KOR is ordinary **user-mode** code: threads inside the KALKAN process.
+//! "Kernel" is part of its name only; it does not run in Windows kernel
+//! mode, use or install a driver, or form part of the Windows kernel.
+//! (Previously named GoodBoyDPI.)
+//!
+//! **Scope:** lifecycle management, real process metrics and read-only
+//! network counters. No DPI circumvention, packet capture or packet
+//! modification exists.
 //!
 //! # Threads
 //!
 //! ```text
-//!  UI thread                 controller "kalkan-engine"          worker "goodboydpi-core"
+//!  UI thread                 controller "kalkan-engine"          worker "kor-core"
 //!  ─────────                 ──────────────────────────          ────────────────────────
 //!  send(Command) ──Msg::Cmd──► recv() (blocks, no polling)
 //!                              owns Lifecycle                     spawned on Start
@@ -42,13 +48,18 @@ use crate::link::{EngineLink, Waker};
 use crate::protocol::{Command, DiagLevel, EngineStatus, Event};
 use kalkan_net::{InterfaceChange, NetTracker, NetworkMonitor, NetworkStatus, Snapshot};
 
-/// Internal engine name. It does **not** imply DPI functionality.
-pub const ENGINE_NAME: &str = "GoodBoyDPI";
+/// Engine name (KOR — Kernel Operations Runtime; previously GoodBoyDPI).
+/// A user-mode engine: "Kernel" does not mean Windows kernel mode.
+pub const ENGINE_NAME: &str = "KOR";
 /// Display identity.
-pub const ENGINE_TITLE: &str = "GoodBoyDPI — Rust Core Engine";
+pub const ENGINE_TITLE: &str = "KOR — Kernel Operations Runtime";
 /// What the engine does today, shown next to its identity.
 pub const ENGINE_SCOPE: &str =
-    "Lifecycle and process metrics only. No DPI circumvention or packet processing.";
+    "Read-only monitoring only. No DPI circumvention or packet processing.";
+/// Name of the worker thread (it appears in log lines). Log files written
+/// before the rename contain the previous name, `goodboydpi-core`; the log
+/// viewer reads both, because it does not depend on thread names.
+pub const WORKER_THREAD_NAME: &str = "kor-core";
 
 /// Accepted range for [`Command::SetSampleInterval`] (matches the
 /// configuration's `monitor.sample_interval_ms` bounds).
@@ -415,7 +426,7 @@ impl Controller {
         let (gen, spec, tx) = (self.gen, self.spec.clone(), self.tx.clone());
         let alive = self.alive.clone();
         let spawned = thread::Builder::new()
-            .name("goodboydpi-core".into())
+            .name(WORKER_THREAD_NAME.into())
             .spawn(move || {
                 let _count = ThreadCount::new(&alive);
                 worker_main(gen, spec, ctl_rx, tx);

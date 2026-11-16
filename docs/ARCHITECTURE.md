@@ -51,7 +51,8 @@ kalkan/
 KOR is KALKAN's background engine. **Today it manages its own lifecycle, reads the Windows interface counters (read-only, `GetIfTable2`) and measures KALKAN's own CPU and memory use. It contains no DPI circumvention, packet capture, packet injection or packet modification.**
 
 * **User mode only.** KOR is a set of ordinary threads inside `kalkan.exe`. "Kernel" in *Kernel Operations Runtime* is part of the name; KOR does not run in Windows kernel mode, does not use or install a kernel driver, and is not a Windows kernel component.
-* **Naming status.** KOR was previously named *GoodBoyDPI*. The code still carries the legacy name: the engine panel shows `ENGINE_TITLE` = "GoodBoyDPI — Rust Core Engine", `ENGINE_NAME` = "GoodBoyDPI", the Settings help text says "Start GoodBoyDPI when KALKAN opens", and the worker thread is named `goodboydpi-core` (visible in log lines). This page uses the real identifiers where it names them. The code-level rename is planned and not done; no configuration key contains the old name.
+* **Naming.** KOR was previously named *GoodBoyDPI*. In code: `ENGINE_NAME` = "KOR", `ENGINE_TITLE` = "KOR — Kernel Operations Runtime" (engine panel), `ENGINE_SCOPE` = "Read-only monitoring only. No DPI circumvention or packet processing.", the Settings help text "Start the KOR engine when KALKAN opens", and the worker thread `WORKER_THREAD_NAME` = `kor-core`. *This rename is implemented locally and has not run on Windows yet.*
+* **Compatibility.** No configuration key contains the engine name, so existing `kalkan.toml` files are unaffected. Log files written before the rename contain the thread name `goodboydpi-core`; the log viewer's history parser does not depend on thread names and loads both (unit test `history_parses_old_and_new_engine_thread_names`).
 
 ### Threads
 
@@ -59,7 +60,7 @@ KOR is KALKAN's background engine. **Today it manages its own lifecycle, reads t
 |---|---|---|---|
 | UI (main) | app | Win32 message loop | `GetMessageW` |
 | `kalkan-engine` (controller) | app (spawned at start-up, joined at exit) | Sole owner of the `Lifecycle`. Turns commands and worker reports into events | `mpsc::Receiver::recv()` |
-| `goodboydpi-core` (worker; legacy thread name) | from Start to Stop | Initialisation, then periodic process metrics and network samples | `recv_timeout(sample_interval)` on its control channel |
+| `kor-core` (worker; `goodboydpi-core` before the rename) | from Start to Stop | Initialisation, then periodic process metrics and network samples | `recv_timeout(sample_interval)` on its control channel |
 | `kalkan-log-history` | once at start-up, a few ms | Reads the tail (≤ 512 KiB) of the previous log into the viewer | exits when done; joined at shutdown |
 | `kalkan-io` | per Save / Reset / Export click | Writes `kalkan.toml` or an exported log file, so the UI never blocks on disk | exits after posting `WM_APP_IO`; joined at shutdown |
 
@@ -68,7 +69,7 @@ While the engine is stopped, two threads exist: the UI and the controller. The c
 ### Message flow
 
 ```
- UI thread                 controller "kalkan-engine"            worker "goodboydpi-core"
+ UI thread                 controller "kalkan-engine"            worker "kor-core"
  ─────────                 ──────────────────────────            ────────────────────────
  Start click ─Command────► Stopped → Starting  (StateChanged)
                            spawn worker ───────────────────────► init: create probe,
@@ -121,7 +122,7 @@ While the engine is stopped, two threads exist: the UI and the controller. The c
 ## Network monitoring (read-only)
 
 ```
- goodboydpi-core worker, once per sample_interval (default 1 s):
+ kor-core worker, once per sample_interval (default 1 s):
    WinNetworkMonitor::sample(&mut snapshot)      kalkan-win  (GetIfTable2 → FreeMibTable)
      drops: NDIS filter rows, loopback, down non-hardware interfaces
      fills: id (LUID), alias, description, kind, connected, hardware, MAC, In/OutOctets, link speed

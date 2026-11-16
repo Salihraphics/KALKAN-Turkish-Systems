@@ -214,3 +214,18 @@ fn concurrent_pushes_are_all_recorded() {
     assert_eq!(b.snapshot().len(), 4000);
     assert_eq!(b.evicted(), 0);
 }
+
+#[test]
+fn history_parses_old_and_new_engine_thread_names() {
+    // Log files written before the KOR rename name the worker thread
+    // `goodboydpi-core`; newer ones `kor-core`. Both must load.
+    for thread in ["goodboydpi-core", "kor-core"] {
+        let line = format!(
+            "2026-11-15T20:43:05.777616Z  INFO {thread} kalkan_core::engine: engine worker stopped gen=3"
+        );
+        let e = parse_line(&line).unwrap_or_else(|| panic!("{line}"));
+        assert_eq!(e.thread, thread);
+        assert_eq!(e.target, "kalkan_core::engine");
+        assert_eq!(e.message, "engine worker stopped gen=3");
+    }
+}

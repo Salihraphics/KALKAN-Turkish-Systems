@@ -1,6 +1,6 @@
 # KALKAN GUI
 
-*KALKAN — A Novera Labs Product. Engine: KOR — Kernel Operations Runtime (legacy name GoodBoyDPI; see [ARCHITECTURE.md](ARCHITECTURE.md) for the naming status).*
+*KALKAN — A Novera Labs Product. Engine: KOR — Kernel Operations Runtime (previously GoodBoyDPI; see [ARCHITECTURE.md](ARCHITECTURE.md)).*
 
 The GUI is native Win32, painted with GDI. It uses no Electron, WebView2, Tauri or UI framework. The only Windows dependency is the `windows` crate.
 
@@ -85,7 +85,7 @@ All colours and sizes come from `theme.rs`. There are no gradients, shadows or a
 ┌──────────────┬──────────────────────────────────────────────────┐
 │ ◆ KALKAN     │  Page title / subtitle                           │
 │   v0.1.0     │ ┌─ notice (Dashboard) ─────────────────────────┐ │
-│ ▣ Dashboard  │ ┌─ ◆ GoodBoyDPI — Rust Core Engine  [▶Start][■Stop]┐
+│ ▣ Dashboard  │ ┌─ ◆ KOR — Kernel Operations Runtime  [▶Start][■Stop]┐
 │ ⇅ Network    │ │  (● Running)  Running for 01:23              │ │
 │ ▥ Statistics │ │  Lifecycle and process metrics only. No DPI…  │ │
 │ ☰ Logs       │ ├──────────────────────────────────────────────┤ │
@@ -115,7 +115,7 @@ All colours and sizes come from `theme.rs`. There are no gradients, shadows or a
 
   A duplicate command that gets past the buttons (for example, sent directly) is rejected by the engine. It shows an amber warning notice and the state does not change.
 * Errors from the engine (`EngineError`) appear as a red notice with the engine's real message. A successful Start or Stop clears old notices.
-* The engine panel always shows the engine identity, currently still the legacy title **GoodBoyDPI — Rust Core Engine** (`kalkan_core::ENGINE_TITLE`; renaming it to KOR is planned, not done), and the scope line "Lifecycle and process metrics only. No DPI circumvention or packet processing." (`ENGINE_SCOPE`; the wording predates read-only network monitoring and understates what the engine reads; updating it belongs with the planned rename) The scope line spans the full panel width below the buttons, so it stays readable at the minimum window size. A layout test checks this.
+* The engine panel always shows the identity **KOR — Kernel Operations Runtime** (`kalkan_core::ENGINE_TITLE`) and the scope line "Read-only monitoring only. No DPI circumvention or packet processing." (`ENGINE_SCOPE`; the previous wording, "Lifecycle and process metrics only…", predated network monitoring). *Renamed locally; not yet run on Windows, and the screenshots still show the previous title.* The scope line spans the full panel width below the buttons, so it stays readable at the minimum window size. A layout test checks this.
 * Keyboard: Tab/Shift+Tab reach every Logs and Settings control (search box, chips, list, Pause/Copy/Export, level segments, number boxes, switches, Save/Revert/Reset). Ctrl+C in the log list copies the selected entry.
 
 ## Logs page (Phase 5)

@@ -89,7 +89,7 @@ impl Field {
                 let (lo, hi) = SAMPLE_INTERVAL_MS_RANGE;
                 format!("ms, {lo}–{hi}. How often network and process data are sampled")
             }
-            Field::StartEngineOnLaunch => "Start GoodBoyDPI when KALKAN opens".into(),
+            Field::StartEngineOnLaunch => "Start the KOR engine when KALKAN opens".into(),
             Field::StartMinimized => "Open KALKAN minimized".into(),
         }
     }

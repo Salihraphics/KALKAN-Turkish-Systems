@@ -6,7 +6,8 @@
 //! * [`Command`] and [`Event`]: the *only* vocabulary the GUI uses to talk to
 //!   the engine.
 //! * [`EngineLink`]: the non-blocking trait the GUI holds.
-//! * [`EngineHandle`]: the engine (GoodBoyDPI) itself. It is a controller
+//! * [`EngineHandle`]: the engine (KOR — Kernel Operations Runtime, a
+//!   user-mode engine; previously GoodBoyDPI) itself. It is a controller
 //!   thread plus a worker thread that runs while the engine is started. See
 //!   [`engine`].
 
@@ -23,7 +24,7 @@ pub use kalkan_net::{InterfaceKind, InterfaceStatus, NetworkStatus};
 pub use engine::{
     live_engine_threads, EngineHandle, EngineSpec, NetworkFactory, ProbeFactory, ProcessProbe,
     ProcessSample, ENGINE_NAME, ENGINE_SCOPE, ENGINE_TITLE, MAX_SAMPLE_INTERVAL,
-    MIN_SAMPLE_INTERVAL,
+    MIN_SAMPLE_INTERVAL, WORKER_THREAD_NAME,
 };
 pub use lifecycle::{EngineState, Lifecycle, Transition, TransitionError};
 pub use link::{EngineLink, Waker};

@@ -39,7 +39,7 @@ KALKAN is **not** a GUI wrapper around GoodbyeDPI or any other tool. It is an in
 
 > **About the engine name.** KOR is KALKAN's background engine: an ordinary **user-mode** part of `kalkan.exe` (threads in the application process). The word "Kernel" in *Kernel Operations Runtime* does **not** mean it runs in Windows kernel mode, uses or installs a kernel driver, or is a Windows kernel component. KALKAN installs no drivers.
 >
-> **Naming status.** The engine was previously called *GoodBoyDPI*. The documentation now uses KOR; the **code-level rename has not been done yet**: the current build still shows "GoodBoyDPI — Rust Core Engine" in the engine panel and uses legacy internal identifiers (for example the worker thread name `goodboydpi-core` in log lines). Screenshots show the legacy name.
+> **Naming status.** The engine was previously called *GoodBoyDPI*. The code now uses KOR: the engine panel shows "KOR — Kernel Operations Runtime", the Settings help text says "Start the KOR engine when KALKAN opens", and the worker thread is named `kor-core`. This rename is implemented locally and **has not run on Windows yet**; the screenshots below still show the legacy name until the Windows self-test regenerates them. Log files written by older builds keep the old thread name `goodboydpi-core` and still load in the log viewer.
 
 **Current capabilities:** a native Windows GUI (Win32, Rust); read-only network monitoring through the Windows IP Helper API (`GetIfTable2`) with per-interface statistics, download/upload speed and traffic totals; KALKAN's own CPU and memory use; Logs and Settings pages; TOML configuration; event-driven communication between the GUI and the engine. KALKAN does **not** implement DPI circumvention, packet capture, packet manipulation or injection, or any restriction bypass, and it does not enable access to any blocked service.
 
@@ -51,7 +51,7 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 |---|---|---|
 | 1 | Project foundation and compilation | ✅ Done |
 | 2 | Native Win32 GUI | ✅ Done |
-| 3 | Core engine lifecycle: KOR (threaded; legacy name GoodBoyDPI) | ✅ Done |
+| 3 | Core engine lifecycle: KOR (threaded; previously GoodBoyDPI) | ✅ Done |
 | 4 | Read-only network monitoring and UI refinement | ✅ Done |
 | 5 | Logging (files, rotation, in-app view) and configuration UI | ✅ Done |
 | 6 | Performance measurement and optimization | 🔧 In progress (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md)) |
@@ -62,7 +62,7 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 Captured automatically by `kalkan --self-test` on the Windows CI runner (CI run 20). The traffic is real and low, because the runner is idle:
 
 <p align="center">
-  <img src="docs/screenshots/dashboard-running.png" width="720" alt="Dashboard: engine running (shown under its legacy name GoodBoyDPI in this build), live download/upload/CPU/memory cards, active interface strip" />
+  <img src="docs/screenshots/dashboard-running.png" width="720" alt="Dashboard: engine running (screenshot from before the KOR rename, showing the legacy name GoodBoyDPI), live download/upload/CPU/memory cards, active interface strip" />
 </p>
 
 | Logs (real entries, level chips, search) | Settings (editable, validated) |
@@ -145,7 +145,7 @@ Wi-Fi, disconnects, reconnects, adapter removal and counter resets are covered b
 ### Not implemented yet
 
 - Scrolling: very long interface lists are cut off with "+N more"; enlarge the window to see all of them. There is also no light theme and no system tray.
-- Any DPI-related functionality (Phase 7, research only). "DPI" in the legacy engine name GoodBoyDPI never referred to an implemented feature; the engine's official name is now KOR (the code-level rename is still pending).
+- Any DPI-related functionality (Phase 7, research only). "DPI" in the legacy engine name GoodBoyDPI never referred to an implemented feature; the engine is now named KOR.
 
 ## 🧠 Architecture
 

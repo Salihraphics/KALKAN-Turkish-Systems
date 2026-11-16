@@ -850,3 +850,27 @@ fn sample_interval_change_applies_on_next_start_and_is_validated() {
     assert!(states(&evs).is_empty(), "no state change");
     shutdown_clean(h);
 }
+
+#[test]
+fn engine_identity_is_kor_and_the_worker_thread_is_named_kor_core() {
+    assert_eq!(ENGINE_NAME, "KOR");
+    assert_eq!(ENGINE_TITLE, "KOR — Kernel Operations Runtime");
+    assert_eq!(WORKER_THREAD_NAME, "kor-core");
+    assert!(
+        !ENGINE_TITLE.contains("GoodBoy") && !ENGINE_NAME.contains("DPI"),
+        "no legacy name in the display identity"
+    );
+    assert!(ENGINE_SCOPE.contains("No DPI circumvention"));
+
+    // The probe is created on the worker thread: record that thread's name.
+    let seen = Arc::new(std::sync::Mutex::new(None::<String>));
+    let s = seen.clone();
+    let mut h = spawn(spec_with(move || {
+        *s.lock().unwrap() = thread::current().name().map(str::to_owned);
+        Ok(Box::new(FakeProbe::default()))
+    }));
+    h.send(Command::Start);
+    until(&mut h, |e| matches!(e, Event::EngineStarted));
+    assert_eq!(seen.lock().unwrap().as_deref(), Some("kor-core"));
+    h.shutdown(T).unwrap();
+}
