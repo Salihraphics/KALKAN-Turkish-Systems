@@ -168,7 +168,7 @@ All colours and sizes come from `theme.rs`. There are no gradients, shadows or a
 
 ## Self-test (`kalkan --self-test --screenshots <dir>`)
 
-In Phase 5 the self-test has **63 checks** (CI run 20: 63 passed in each of the 3 runs). Phase 5 adds these checks, using the real window, engine and logger:
+In Phase 5 the self-test has **63 checks**, plus a 64th (the `.bak` check) when it starts from an invalid file. CI run 20: 63/63, 63/63 and 64/64 passed. Phase 5 adds these checks, using the real window, engine and logger:
 
 * **Logs:** the page shows real engine entries ("engine started"); the list box row count equals the filtered entries; an upper-case search finds entries case-insensitively; turning INFO and DEBUG chips off hides them; a paused view does not change while a marker is logged, and Resume shows it; Copy puts exactly the selected entry on the clipboard; Export writes exactly the text that was visible when it ran, off the UI thread.
 * **Settings:** the configuration state is recorded; an out-of-range value ("0" MB) is rejected with an explanation and the file is byte-for-byte unchanged; a valid save (12 MB, debug level) is on disk and the log level changes live; Reset to defaults writes the defaults and re-applies the Info level. When the run starts from an invalid file, the `.bak` copy must exist (CI run 3 starts from `sample_interval_ms = 5`).
