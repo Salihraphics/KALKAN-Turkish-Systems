@@ -55,7 +55,7 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 | 4 | Read-only network monitoring and UI refinement | ✅ Done |
 | 5 | Logging (files, rotation, in-app view) and configuration UI | ✅ Done |
 | 6 | Performance measurement and optimization | ✅ Done (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md)) |
-| 7 | DPI research and controlled integration planning | 🔬 In progress (research and documentation only; no implementation) |
+| 7 | DPI research and controlled integration planning | 🔬 In progress: research and integration proposal in [docs/PHASE7-RESEARCH.md](docs/PHASE7-RESEARCH.md); no implementation |
 
 ### Screenshots
 

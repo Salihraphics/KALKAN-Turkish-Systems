@@ -206,7 +206,7 @@ in [PERFORMANCE.md](PERFORMANCE.md). The architecture was not changed:
 
 ## Extension points (Phase 7, research only)
 
-Packet-processing features, such as DPI compatibility work, would live in a **separate crate** behind a separate trait. They would be off by default, need an explicit user action in Settings, and need explicit administrator consent if a driver is involved. The GUI would see them only through new `Command`/`Event` variants. Nothing in Phases 1–6 installs drivers, changes system networking or touches security software.
+Packet-processing features, such as DPI compatibility work, would live in a **separate crate** behind a separate trait. They would be off by default, need an explicit user action in Settings, and need explicit administrator consent if a driver is involved. The GUI would see them only through new `Command`/`Event` variants. Nothing in Phases 1–6 installs drivers, changes system networking or touches security software. The Phase 7 research and integration proposal (no implementation) is in [PHASE7-RESEARCH.md](PHASE7-RESEARCH.md).
 
 ## Error handling and shutdown
 
