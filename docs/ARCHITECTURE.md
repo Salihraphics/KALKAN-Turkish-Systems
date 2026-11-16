@@ -51,7 +51,7 @@ kalkan/
 KOR is KALKAN's background engine. **Today it manages its own lifecycle, reads the Windows interface counters (read-only, `GetIfTable2`) and measures KALKAN's own CPU and memory use. It contains no DPI circumvention, packet capture, packet injection or packet modification.**
 
 * **User mode only.** KOR is a set of ordinary threads inside `kalkan.exe`. "Kernel" in *Kernel Operations Runtime* is part of the name; KOR does not run in Windows kernel mode, does not use or install a kernel driver, and is not a Windows kernel component.
-* **Naming.** KOR was previously named *GoodBoyDPI*. In code: `ENGINE_NAME` = "KOR", `ENGINE_TITLE` = "KOR — Kernel Operations Runtime" (engine panel), `ENGINE_SCOPE` = "Read-only monitoring only. No DPI circumvention or packet processing.", the Settings help text "Start the KOR engine when KALKAN opens", and the worker thread `WORKER_THREAD_NAME` = `kor-core`. *This rename is implemented locally and has not run on Windows yet.*
+* **Naming.** KOR was previously named *GoodBoyDPI*. In code: `ENGINE_NAME` = "KOR", `ENGINE_TITLE` = "KOR — Kernel Operations Runtime" (engine panel), `ENGINE_SCOPE` = "Read-only monitoring only. No DPI circumvention or packet processing.", the Settings help text "Start the KOR engine when KALKAN opens", and the worker thread `WORKER_THREAD_NAME` = `kor-core`. *Validated on Windows CI (run 38).*
 * **Compatibility.** No configuration key contains the engine name, so existing `kalkan.toml` files are unaffected. Log files written before the rename contain the thread name `goodboydpi-core`; the log viewer's history parser does not depend on thread names and loads both (unit test `history_parses_old_and_new_engine_thread_names`).
 
 ### Threads
@@ -191,13 +191,13 @@ in [PERFORMANCE.md](PERFORMANCE.md). The architecture was not changed:
 * The engine, monitor and tracker were already cheap (about 0.34 ms CPU per
   1 s sample, 99 % of it in `GetIfTable2`; validated on Windows CI). The only
   change there is the tracker computing each interface's sort key once
-  instead of per comparison (same order). *Measured on Linux only; not yet
-  run on Windows CI.*
+  instead of per comparison (same order). *Validated on Windows CI (run
+  38): 128 simulated adapters 119 → 46 µs.*
 * The GUI kept its event-driven design (no periodic timers, no polling).
   Metrics-only updates no longer move or repaint child controls and skip the
-  sidebar (*validated on Windows CI, run 36*). Repainting only the blocks
-  that show live data is the next step (*local, not yet run on Windows*);
-  see [GUI.md](GUI.md).
+  sidebar (*validated on Windows CI, run 36*). Since run 38 only the blocks
+  that show live data are repainted (*validated: one update 55 % cheaper
+  than the original path, same process*); see [GUI.md](GUI.md).
 * No unbounded collection was found: graph history is a fixed 60-sample
   ring, the log viewer a 5 000-entry ring, the tracker's maps are rebuilt
   from each snapshot (removed adapters are dropped), and engine threads are

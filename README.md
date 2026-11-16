@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge&logo=rust" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?style=for-the-badge&logo=windows" />
   <img src="https://img.shields.io/badge/Architecture-Native-success?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Status-Phase%206%20of%207%20(in%20progress)-yellow?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Status-Phase%207%20of%207%20(research)-yellow?style=for-the-badge" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" />
 </p>
 
@@ -39,7 +39,7 @@ KALKAN is **not** a GUI wrapper around GoodbyeDPI or any other tool. It is an in
 
 > **About the engine name.** KOR is KALKAN's background engine: an ordinary **user-mode** part of `kalkan.exe` (threads in the application process). The word "Kernel" in *Kernel Operations Runtime* does **not** mean it runs in Windows kernel mode, uses or installs a kernel driver, or is a Windows kernel component. KALKAN installs no drivers.
 >
-> **Naming status.** The engine was previously called *GoodBoyDPI*. The code now uses KOR: the engine panel shows "KOR — Kernel Operations Runtime", the Settings help text says "Start the KOR engine when KALKAN opens", and the worker thread is named `kor-core`. This rename is implemented locally and **has not run on Windows yet**; the screenshots below still show the legacy name until the Windows self-test regenerates them. Log files written by older builds keep the old thread name `goodboydpi-core` and still load in the log viewer.
+> **Naming status.** The engine was previously called *GoodBoyDPI*. The code now uses KOR: the engine panel shows "KOR — Kernel Operations Runtime", the Settings help text says "Start the KOR engine when KALKAN opens", and the worker thread is named `kor-core`. Validated on Windows CI (run 38); the screenshots below are from that run. Log files written by older builds keep the old thread name `goodboydpi-core` and still load in the log viewer.
 
 **Current capabilities:** a native Windows GUI (Win32, Rust); read-only network monitoring through the Windows IP Helper API (`GetIfTable2`) with per-interface statistics, download/upload speed and traffic totals; KALKAN's own CPU and memory use; Logs and Settings pages; TOML configuration; event-driven communication between the GUI and the engine. KALKAN does **not** implement DPI circumvention, packet capture, packet manipulation or injection, or any restriction bypass, and it does not enable access to any blocked service.
 
@@ -54,15 +54,15 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 | 3 | Core engine lifecycle: KOR (threaded; previously GoodBoyDPI) | ✅ Done |
 | 4 | Read-only network monitoring and UI refinement | ✅ Done |
 | 5 | Logging (files, rotation, in-app view) and configuration UI | ✅ Done |
-| 6 | Performance measurement and optimization | 🔧 In progress (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md)) |
-| 7 | DPI research and controlled integration planning | 🔬 Research |
+| 6 | Performance measurement and optimization | ✅ Done (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md)) |
+| 7 | DPI research and controlled integration planning | 🔬 In progress (research and documentation only; no implementation) |
 
 ### Screenshots
 
-Captured automatically by `kalkan --self-test` on the Windows CI runner (CI run 20). The traffic is real and low, because the runner is idle:
+Captured automatically by `kalkan --self-test` on the Windows CI runner (CI run 38). The traffic is real and low, because the runner is idle:
 
 <p align="center">
-  <img src="docs/screenshots/dashboard-running.png" width="720" alt="Dashboard: engine running (screenshot from before the KOR rename, showing the legacy name GoodBoyDPI), live download/upload/CPU/memory cards, active interface strip" />
+  <img src="docs/screenshots/dashboard-running.png" width="720" alt="Dashboard: KOR — Kernel Operations Runtime running, live download/upload/CPU/memory cards, active interface strip" />
 </p>
 
 | Logs (real entries, level chips, search) | Settings (editable, validated) |
@@ -206,10 +206,10 @@ Performance is a requirement, not an afterthought:
 
 - No background polling while idle, and no async runtime unless it is justified. The GUI sleeps in `GetMessageW` and uses no periodic timers (the only timer is a one-shot timeout while closing).
 - Monitoring is read-only. It reads OS counters and does no packet processing.
-- Phase 6 (in progress) measures CPU, memory, handles, input latency and paint work with `kalkan --benchmark`, `kalkan --soak <minutes>` and a simulated long-run test. Results, methodology and limits are in **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**.
+- Phase 6 (completed) measured CPU, memory, handles, input latency and paint work with `kalkan --benchmark`, `kalkan --soak <minutes>` and a simulated long-run test. Results, methodology and limits are in **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**.
   - **Validated on Windows CI** (GitHub Actions VM, not desktop hardware): network monitoring costs about 0.34 ms CPU per 1 s sample; with the live Network page open the whole app stayed below 1 % of one core in every steady minute of three 30-minute soaks; memory, handles and threads were flat; input latency p99 was 0.2 ms. The first GUI repaint optimization cut owner-drawn control repaints during monitoring from 5.05 to 0.03 per second and relayouts from 1 to 0 per second. No CPU improvement is claimed: the difference is within the run-to-run noise of the VMs.
   - **Simulated** (any OS): no heap growth over 5 000 samples with adapter churn and API failures, 300 start/stop cycles and a 100 000-line log flood.
-  - **Not yet run on Windows:** the latest local changes (repainting only the live blocks, cached tracker sort keys); the tracker change was measured on Linux only.
+  - **Also validated on Windows CI (run 38):** repainting only the blocks that show live data makes one metrics update 55 % cheaper than the original path in the same process (2.6–2.8 ms vs 5.9–6.1 ms); the tracker handles 128 simulated adapters in 46 µs instead of 119 µs; a Settings page frame takes 2–6 ms and a window resize 8–14 ms on average (worst single resize: 18.7 ms, on the Settings page).
   - **We do not claim numbers for real desktop hardware until they are measured there.**
 
 ## 🔐 Security and transparency
