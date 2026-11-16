@@ -28,7 +28,7 @@ use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontIndirectW, DeleteDC,
     DeleteObject, EndPaint, GetDC, GetDIBits, InvalidateRect, RedrawWindow, ReleaseDC,
     SelectObject, UpdateWindow, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLEARTYPE_QUALITY,
-    DEFAULT_CHARSET, DIB_RGB_COLORS, FW_NORMAL, FW_SEMIBOLD, HGDIOBJ, LOGFONTW, PAINTSTRUCT,
+    DEFAULT_CHARSET, DIB_RGB_COLORS, FW_NORMAL, FW_SEMIBOLD, HDC, HGDIOBJ, LOGFONTW, PAINTSTRUCT,
     RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, SRCCOPY,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
@@ -63,6 +63,8 @@ use crate::model::{page_view, AppInfo, NoticeKind, Page, PageView, UiState};
 use crate::theme::{self, scale};
 use crate::{Check, GuiError, RunOptions, SelfTestReport};
 
+#[path = "win32_pages.rs"]
+mod pages;
 #[path = "win32_paint.rs"]
 mod paint;
 
@@ -151,6 +153,10 @@ fn win_err(call: &'static str, e: windows::core::Error) -> GuiError {
     }
 }
 
+fn hiword(v: usize) -> u16 {
+    ((v >> 16) & 0xFFFF) as u16
+}
+
 fn loword(v: usize) -> u16 {
     (v & 0xFFFF) as u16
 }
@@ -178,6 +184,8 @@ struct WindowState {
     close_forced: bool,
     /// Window/taskbar icons created at runtime; destroyed on drop.
     icons: Vec<HICON>,
+    /// Logs and Settings page controls and state.
+    pages: pages::Pages,
     /// Set to `true` when the state is dropped (clean shutdown check).
     dropped: Rc<Cell<bool>>,
     /// Records whether the engine confirmed shutdown before the window died.
@@ -203,6 +211,7 @@ impl Drop for WindowState {
 struct CreateParams {
     info: AppInfo,
     engine: Option<Box<dyn EngineLink>>,
+    services: Option<crate::Services>,
     dropped: Rc<Cell<bool>>,
     shutdown_confirmed: Rc<Cell<bool>>,
     panicked: Rc<Cell<bool>>,
@@ -218,12 +227,15 @@ impl WindowState {
     fn content(&self) -> Content {
         Content {
             engine_panel: self.view.engine_panel,
-            notice: self.view.engine_panel && self.ui.notice.is_some(),
+            notice: self.ui.visible_notice().is_some(),
             tiles: self.view.tiles.len(),
             cards: self.view.cards.len(),
             strip: !self.view.strip.is_empty(),
             table_rows: self.view.table.as_ref().map(|t| t.rows.len()),
             note: self.view.note.is_some(),
+            header_buttons: self.view.header_buttons,
+            log_viewer: self.view.log_viewer,
+            settings_rows: self.view.settings_rows,
         }
     }
 
@@ -262,6 +274,7 @@ impl WindowState {
             let _ = EnableWindow(self.start_btn, open && self.ui.can_start());
             let _ = EnableWindow(self.stop_btn, open && self.ui.can_stop());
         }
+        self.layout_pages();
         self.invalidate();
     }
 
@@ -344,6 +357,9 @@ impl WindowState {
                 if let Some(p) = Page::from_index((id - ID_NAV_BASE) as usize) {
                     if self.ui.navigate(p) {
                         self.relayout();
+                        if p == Page::Logs {
+                            self.refresh_logs();
+                        }
                     }
                 }
             }
@@ -354,6 +370,7 @@ impl WindowState {
     fn on_dpi_changed(&mut self, dpi: u32) {
         self.dpi = dpi;
         self.fonts = Fonts::new(dpi);
+        self.pages.apply_fonts(&self.fonts.body, dpi);
         // Re-layout now (the window size may not change, so WM_SIZE may not
         // follow); WM_SIZE re-lays out again if it does.
         self.relayout();
@@ -471,7 +488,16 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 return def(hwnd, msg, wp, lp);
             };
             let Ok(mut guard) = slot.state.try_borrow_mut() else {
-                // Re-entrant message while we are handling another one.
+                // Re-entrant message while we are handling another one. Our
+                // own wake-up messages must not be lost (their senders only
+                // post again after we drain): retry them later.
+                if matches!(msg, WM_APP_ENGINE | pages::WM_APP_LOG | pages::WM_APP_IO) {
+                    // SAFETY: posting to our own window.
+                    unsafe {
+                        let _ = PostMessageW(Some(hwnd), msg, wp, lp);
+                    }
+                    return LRESULT(0);
+                }
                 return def(hwnd, msg, wp, lp);
             };
             let Some(st) = guard.as_mut() else {
@@ -486,6 +512,10 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             match outcome {
                 Outcome::Done(r) => r,
                 Outcome::Default => def(hwnd, msg, wp, lp),
+                Outcome::Deferred(d) => {
+                    run_deferred(hwnd, d);
+                    LRESULT(0)
+                }
                 Outcome::MoveTo(r) => {
                     // SAFETY: valid window handle; no borrows are held, so the
                     // WM_SIZE this triggers re-lays out normally.
@@ -650,10 +680,39 @@ fn on_create(hwnd: HWND, lp: LPARAM) -> Result<(), GuiError> {
         }
     }));
 
+    let Some(services) = cp.services.take() else {
+        return Err(GuiError::Win32 {
+            call: "WM_CREATE",
+            message: "services already taken".into(),
+        });
+    };
+    let mut pages = pages::Pages::create(hwnd, services)?;
+    let fonts = Fonts::new(dpi);
+    pages.apply_fonts(&fonts.body, dpi);
+    if let Some(logging) = pages.logging.clone() {
+        // New log entries wake the window (coalesced by the buffer).
+        let target = hwnd.0 as isize;
+        logging.buffer().set_waker(Box::new(move || {
+            // SAFETY: PostMessageW may be called from any thread.
+            unsafe {
+                let _ = PostMessageW(
+                    Some(HWND(target as *mut c_void)),
+                    pages::WM_APP_LOG,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }));
+        // Previous run's log tail, read off the UI thread.
+        if let Some(t) = logging.spawn_history_load() {
+            pages.track_thread(t);
+        }
+    }
+
     let mut st = WindowState {
         hwnd,
         dpi,
-        fonts: Fonts::new(dpi),
+        fonts,
         nav,
         start_btn,
         stop_btn,
@@ -664,6 +723,7 @@ fn on_create(hwnd: HWND, lp: LPARAM) -> Result<(), GuiError> {
         layout: Layout::default(),
         wake_pending,
         icons,
+        pages,
         closing: false,
         close_forced: false,
         dropped: cp.dropped.clone(),
@@ -681,6 +741,22 @@ fn on_create(hwnd: HWND, lp: LPARAM) -> Result<(), GuiError> {
     Ok(())
 }
 
+/// Run a modal dialog with no borrow held, then apply the answer.
+fn run_deferred(hwnd: HWND, d: pages::Deferred) {
+    match d {
+        pages::Deferred::Export => {
+            if let Some(path) = pages::ask_export_path(hwnd) {
+                with_state_mut(hwnd, |s| s.export_logs_to(path));
+            }
+        }
+        pages::Deferred::ConfirmReset => {
+            if pages::confirm_reset(hwnd) {
+                with_state_mut(hwnd, |s| s.reset_settings_confirmed());
+            }
+        }
+    }
+}
+
 /// Result of handling a message while the window state is borrowed. Anything
 /// that may re-enter the window procedure runs after the borrow is released.
 enum Outcome {
@@ -689,6 +765,8 @@ enum Outcome {
     Default,
     /// Move/resize the window to this rectangle, then return 0.
     MoveTo(RECT),
+    /// Run a modal dialog, then act on the answer (re-borrowing the state).
+    Deferred(pages::Deferred),
 }
 
 fn handle_with_state(
@@ -763,7 +841,29 @@ fn handle_with_state(
             LRESULT(1)
         }
         WM_COMMAND => {
-            st.on_command(loword(wp.0));
+            let (id, code) = (loword(wp.0), hiword(wp.0));
+            match st.on_page_command(id, code) {
+                Some(Some(d)) => return Outcome::Deferred(d),
+                Some(None) => {}
+                None => st.on_command(id),
+            }
+            LRESULT(0)
+        }
+        pages::WM_CTLCOLOREDIT | pages::WM_CTLCOLORLISTBOX | pages::WM_CTLCOLORSTATIC => {
+            match st.ctl_color(msg, HDC(wp.0 as *mut c_void), HWND(lp.0 as *mut c_void)) {
+                Some(r) => r,
+                None => return Outcome::Default,
+            }
+        }
+        pages::WM_VKEYTOITEM if HWND(lp.0 as *mut c_void) == st.pages.ctl.list => {
+            st.on_list_key(loword(wp.0))
+        }
+        pages::WM_APP_LOG => {
+            st.refresh_logs();
+            LRESULT(0)
+        }
+        pages::WM_APP_IO => {
+            st.on_io();
             LRESULT(0)
         }
         WM_APP_ENGINE => {
@@ -807,6 +907,7 @@ pub fn message_box_error(title: &str, message: &str) {
 pub fn run(
     info: AppInfo,
     engine: Box<dyn EngineLink>,
+    services: crate::Services,
     opts: RunOptions,
 ) -> Result<Option<SelfTestReport>, GuiError> {
     // SAFETY: process-wide setting; failure (e.g. already set by a manifest)
@@ -853,6 +954,7 @@ pub fn run(
     let mut cp = CreateParams {
         info,
         engine: Some(engine),
+        services: Some(services),
         dropped: dropped.clone(),
         shutdown_confirmed: shutdown_confirmed.clone(),
         panicked: panicked.clone(),
@@ -1405,6 +1507,12 @@ fn self_test(
         kalkan_core::live_engine_threads() == 1,
     );
 
+    // ── Logs page: the real log buffer ───────────────────────────────────
+    self_test_logs(hwnd, nav, &mut check, &mut capture);
+    // ── Settings page: real file, validation, live apply, reset ──────────
+    self_test_settings(hwnd, nav, &mut check, &mut capture);
+    click(nav[0]);
+
     // ── Responsive layout (unchanged from Phase 2) ───────────────────────
     let actual_client = || {
         let mut rc = RECT::default();
@@ -1519,6 +1627,260 @@ fn self_test(
         let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
     }
     r
+}
+
+const LB_GETCOUNT: u32 = 0x018B;
+const LB_SETCURSEL_MSG: u32 = 0x0186;
+
+fn set_edit_text(h: HWND, text: &str) {
+    let w = wide(text);
+    // SAFETY: WM_SETTEXT to our own EDIT; it notifies the parent with
+    // EN_CHANGE synchronously (no borrow is held in the self-test).
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(h, PCWSTR(w.as_ptr()));
+    }
+    pump();
+}
+
+fn self_test_logs(
+    hwnd: HWND,
+    nav: [HWND; 5],
+    check: &mut impl FnMut(String, bool),
+    capture: &mut impl FnMut(&str),
+) {
+    use crate::logview::LevelChip;
+    click(nav[Page::Logs.index()]);
+    let has_logging = with_state(hwnd, |s| s.pages.logging.is_some()) == Some(true);
+    check("log buffer available".into(), has_logging);
+    if !has_logging {
+        return;
+    }
+    let ok = wait_until(hwnd, STEP_TIMEOUT, |s| {
+        (0..s.pages.log.visible_len()).any(|i| {
+            s.pages
+                .log
+                .row(i)
+                .is_some_and(|e| e.message == "engine started")
+        })
+    });
+    let (total, visible) = with_state(hwnd, |s| {
+        (s.pages.log.total_len(), s.pages.log.visible_len())
+    })
+    .unwrap_or_default();
+    check(
+        format!("Logs page shows real engine log entries ({visible} of {total})"),
+        ok,
+    );
+    let (list, search) =
+        with_state(hwnd, |s| (s.pages.ctl.list, s.pages.ctl.search)).unwrap_or_default();
+    // SAFETY: plain query on our own list box.
+    let lb = unsafe { SendMessageW(list, LB_GETCOUNT, None, None).0 } as usize;
+    check(
+        format!("virtual list box row count matches the filtered entries ({lb})"),
+        lb == visible,
+    );
+
+    set_edit_text(search, "ENGINE STARTED");
+    let all_match = with_state(hwnd, |s| {
+        let v = &s.pages.log;
+        v.visible_len() > 0
+            && (0..v.visible_len()).all(|i| {
+                v.row(i)
+                    .is_some_and(|e| e.message.to_lowercase().contains("engine started"))
+            })
+    });
+    check(
+        "search filters to matching entries (case-insensitive)".into(),
+        all_match == Some(true),
+    );
+    capture("11-logs-search");
+    set_edit_text(search, "");
+
+    let chips = with_state(hwnd, |s| s.pages.ctl.chips).unwrap_or_default();
+    for c in [LevelChip::Info, LevelChip::Debug] {
+        click(chips[c as usize]);
+    }
+    let only_warn_err = with_state(hwnd, |s| {
+        let v = &s.pages.log;
+        (0..v.visible_len()).all(|i| {
+            v.row(i).is_some_and(|e| {
+                matches!(
+                    e.level,
+                    kalkan_config::LogLevel::Warn | kalkan_config::LogLevel::Error
+                )
+            })
+        }) && v.visible_len() < v.total_len()
+    });
+    check(
+        "level chips hide INFO and DEBUG entries".into(),
+        only_warn_err == Some(true),
+    );
+    for c in [LevelChip::Info, LevelChip::Debug] {
+        click(chips[c as usize]);
+    }
+
+    // Pause: new entries must not appear until resumed.
+    let pause = with_state(hwnd, |s| s.pages.ctl.pause).unwrap_or_default();
+    click(pause);
+    tracing::info!("self-test marker: logged while paused");
+    pump();
+    let has_marker = |s: &WindowState| {
+        (0..s.pages.log.visible_len()).any(|i| {
+            s.pages
+                .log
+                .row(i)
+                .is_some_and(|e| e.message == "self-test marker: logged while paused")
+        })
+    };
+    let hidden = with_state(hwnd, |s| s.pages.log.paused && !has_marker(s));
+    check("paused view does not change".into(), hidden == Some(true));
+    click(pause);
+    let shown = wait_until(hwnd, STEP_TIMEOUT, has_marker);
+    check("resume shows entries logged while paused".into(), shown);
+
+    // Copy the newest entry.
+    let n = with_state(hwnd, |s| s.pages.log.visible_len()).unwrap_or(0);
+    let expected = with_state_mut(hwnd, |s| {
+        s.pages.log.selected = n.checked_sub(1);
+        // SAFETY: select the same row in our list box.
+        unsafe {
+            SendMessageW(
+                s.pages.ctl.list,
+                LB_SETCURSEL_MSG,
+                Some(WPARAM(n.saturating_sub(1))),
+                None,
+            );
+        }
+        s.relayout();
+        s.pages.log.selected_entry().map(|e| e.to_line())
+    })
+    .flatten();
+    let copy = with_state(hwnd, |s| s.pages.ctl.copy).unwrap_or_default();
+    click(copy);
+    let got = pages::read_clipboard(hwnd);
+    check(
+        format!(
+            "Copy puts the selected entry on the clipboard ({} chars)",
+            got.as_deref().map_or(0, str::len)
+        ),
+        expected.is_some() && got == expected,
+    );
+
+    // Export (the path the Save As dialog would return).
+    let path =
+        std::env::temp_dir().join(format!("kalkan-selftest-export-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    with_state_mut(hwnd, |s| s.export_logs_to(path.clone()));
+    let done = wait_until(hwnd, STEP_TIMEOUT, |s| !s.pages.io_busy);
+    let lines = std::fs::read_to_string(&path)
+        .map(|t| t.lines().count())
+        .unwrap_or(0);
+    let visible = with_state(hwnd, |s| s.pages.log.visible_len()).unwrap_or(0);
+    check(
+        format!("Export writes the visible entries off the UI thread ({lines} lines)"),
+        done && lines == visible && lines > 0,
+    );
+    let _ = std::fs::remove_file(&path);
+    capture("11-logs");
+}
+
+fn self_test_settings(
+    hwnd: HWND,
+    nav: [HWND; 5],
+    check: &mut impl FnMut(String, bool),
+    capture: &mut impl FnMut(&str),
+) {
+    use crate::settings::FileState;
+    click(nav[Page::Settings.index()]);
+    let (path, initial, edits, levels, save) = match with_state(hwnd, |s| {
+        (
+            s.pages.config_path.clone(),
+            s.pages.settings.file.clone(),
+            s.pages.ctl.edits,
+            s.pages.ctl.levels,
+            s.pages.ctl.save,
+        )
+    }) {
+        Some(v) => v,
+        None => return,
+    };
+    check(
+        format!("Settings page loaded the configuration state ({initial:?})"),
+        true,
+    );
+    capture("12-settings");
+    let before = std::fs::read(&path).ok();
+
+    // Invalid value: rejected with a message, nothing written.
+    set_edit_text(edits[0], "0");
+    click(save);
+    let rejected = with_state(hwnd, |s| {
+        !s.pages.settings.errors.is_empty()
+            && s.ui
+                .visible_notice()
+                .is_some_and(|n| n.kind == NoticeKind::Error)
+    });
+    check(
+        "out-of-range value is rejected with an explanation".into(),
+        rejected == Some(true),
+    );
+    check(
+        "rejected save leaves the file untouched".into(),
+        std::fs::read(&path).ok() == before,
+    );
+    capture("12-settings-invalid");
+
+    // Valid save: written, applied live (log level), form clean.
+    set_edit_text(edits[0], "12");
+    click(levels[3]); // debug
+    click(save);
+    let saved = wait_until(hwnd, STEP_TIMEOUT, |s| {
+        !s.pages.settings.saving && !s.pages.io_busy
+    });
+    let on_disk = kalkan_config::Config::load(&path).ok();
+    check(
+        "saved settings are on disk".into(),
+        saved
+            && on_disk.as_ref().is_some_and(|c| {
+                c.logging.max_file_size_mb == 12
+                    && c.logging.level == kalkan_config::LogLevel::Debug
+            }),
+    );
+    let live = with_state(hwnd, |s| {
+        s.pages.logging.as_ref().map(|l| l.level()) == Some(kalkan_config::LogLevel::Debug)
+            && !s.pages.settings.dirty()
+    });
+    check(
+        "log level applied live; form no longer dirty".into(),
+        live == Some(true),
+    );
+    if matches!(initial, FileState::Invalid(_)) {
+        let bak = {
+            let mut n = path.as_os_str().to_owned();
+            n.push(".bak");
+            std::path::PathBuf::from(n)
+        };
+        check(
+            "the invalid file was kept as a .bak copy before saving".into(),
+            bak.is_file(),
+        );
+    }
+    capture("12-settings-saved");
+
+    // Reset to defaults (the confirmed path; the dialog itself is modal).
+    with_state_mut(hwnd, |s| s.reset_settings_confirmed());
+    let done = wait_until(hwnd, STEP_TIMEOUT, |s| {
+        !s.pages.settings.saving && !s.pages.io_busy
+    });
+    let reset_ok =
+        kalkan_config::Config::load(&path).ok() == Some(kalkan_config::Config::default());
+    let level_back = with_state(hwnd, |s| {
+        s.pages.logging.as_ref().map(|l| l.level()) == Some(kalkan_config::LogLevel::Info)
+    });
+    check(
+        "Reset to defaults saves the defaults and re-applies them".into(),
+        done && reset_ok && level_back == Some(true),
+    );
 }
 
 /// Save the window's client area (including child controls) as a 32-bit BMP.

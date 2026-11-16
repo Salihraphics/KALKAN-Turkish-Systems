@@ -50,6 +50,11 @@ pub const ENGINE_TITLE: &str = "GoodBoyDPI — Rust Core Engine";
 pub const ENGINE_SCOPE: &str =
     "Lifecycle and process metrics only. No DPI circumvention or packet processing.";
 
+/// Accepted range for [`Command::SetSampleInterval`] (matches the
+/// configuration's `monitor.sample_interval_ms` bounds).
+pub const MIN_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
+pub const MAX_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
+
 /// How long `Shutdown` waits for the worker to exit before giving up on it.
 pub const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -445,6 +450,34 @@ impl Controller {
                 Err(e) => self.reject(cmd, e),
             },
             Command::QueryStatus => self.emit_status(),
+            Command::SetSampleInterval(d) => {
+                if !(MIN_SAMPLE_INTERVAL..=MAX_SAMPLE_INTERVAL).contains(&d) {
+                    tracing::warn!(?d, "sample interval rejected");
+                    self.emit(Event::DiagnosticMessage {
+                        level: DiagLevel::Warning,
+                        message: format!(
+                            "Sample interval {} ms ignored: allowed {}..={} ms.",
+                            d.as_millis(),
+                            MIN_SAMPLE_INTERVAL.as_millis(),
+                            MAX_SAMPLE_INTERVAL.as_millis()
+                        ),
+                    });
+                } else if d != self.spec.sample_interval {
+                    tracing::info!(ms = d.as_millis() as u64, "sample interval changed");
+                    self.spec.sample_interval = d;
+                    if self.lc.state() != EngineState::Stopped
+                        && self.lc.state() != EngineState::Failed
+                    {
+                        self.emit(Event::DiagnosticMessage {
+                            level: DiagLevel::Info,
+                            message: format!(
+                                "Sample interval set to {} ms; it applies the next time the engine starts.",
+                                d.as_millis()
+                            ),
+                        });
+                    }
+                }
+            }
             Command::Shutdown => {
                 self.shutdown();
                 return Flow::Exit;

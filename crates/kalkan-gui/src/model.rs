@@ -357,6 +357,8 @@ pub struct UiState {
     pub counts: EventCounts,
     /// Download/upload rates of the current run, for the graphs.
     pub history: History,
+    /// Result of a page action (save, export, copy), shown on that page.
+    pub page_notice: Option<(Page, Notice)>,
     /// The engine confirmed shutdown (last event it will ever send).
     pub shutdown_complete: bool,
 }
@@ -370,6 +372,7 @@ impl Default for UiState {
             notice: None,
             counts: EventCounts::default(),
             history: History::default(),
+            page_notice: None,
             shutdown_complete: false,
         }
     }
@@ -447,6 +450,26 @@ impl UiState {
         }
     }
 
+    /// The notice to show on the current page, if any: engine notices on the
+    /// Dashboard, action results on the page that produced them.
+    pub fn visible_notice(&self) -> Option<&Notice> {
+        match &self.page_notice {
+            Some((p, n)) if *p == self.page => Some(n),
+            _ if self.page == Page::Dashboard => self.notice.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn set_page_notice(&mut self, page: Page, kind: NoticeKind, message: impl Into<String>) {
+        self.page_notice = Some((
+            page,
+            Notice {
+                kind,
+                message: message.into(),
+            },
+        ));
+    }
+
     pub fn can_start(&self) -> bool {
         self.engine.can_start()
     }
@@ -466,6 +489,13 @@ pub struct PageView {
     pub table: Option<Table>,
     /// Explanatory paragraph at the bottom.
     pub note: Option<String>,
+    /// Action buttons in the header (Logs: Pause/Copy/Export; Settings:
+    /// Save/Revert/Reset).
+    pub header_buttons: usize,
+    /// Logs page: native search box, level chips and log list.
+    pub log_viewer: bool,
+    /// Settings page: editable form with this many rows.
+    pub settings_rows: usize,
 }
 
 const NEEDS_RUNNING: &str = "Measured while the engine is running";
@@ -751,91 +781,17 @@ pub fn page_view(page: Page, ui: &UiState, info: &AppInfo) -> PageView {
             ],
             ..PageView::default()
         },
+        // The Logs and Settings pages are made of native controls and
+        // custom-drawn rows (see win32); their data comes from the log buffer
+        // and the settings state, not from this view.
         Page::Logs => PageView {
-            cards: vec![
-                Card::new(
-                    "Log level",
-                    Icon::Logs,
-                    Value::real(info.log_level.clone(), Source::Config),
-                    "logging.level in kalkan.toml",
-                ),
-                match &info.log_file {
-                    Some(path) => Card::new(
-                        "Log file",
-                        Icon::File,
-                        Value::real(path.clone(), Source::System),
-                        info.log_note.clone(),
-                    ),
-                    // Keep the specific reason (e.g. disabled in the config).
-                    None => Card {
-                        title: "Log file",
-                        icon: Icon::File,
-                        value: Value::unavailable("No log file in use"),
-                        detail: info.log_note.clone(),
-                    },
-                },
-                Card::new(
-                    "Log viewer",
-                    Icon::Statistics,
-                    Value::unavailable("In-app log view arrives in Phase 5"),
-                    "",
-                ),
-            ],
-            note: Some(
-                "The log file is plain text and can be opened in any editor. At start-up a file \
-                 over 5 MB is renamed to kalkan.log.old. Daily rotation and an in-app viewer \
-                 arrive in Phase 5."
-                    .into(),
-            ),
+            header_buttons: 3,
+            log_viewer: true,
             ..PageView::default()
         },
         Page::Settings => PageView {
-            cards: vec![Card::new(
-                "Configuration file",
-                Icon::Settings,
-                Value::real(
-                    if info.config_file_exists {
-                        "Loaded"
-                    } else {
-                        "Defaults (no file yet)"
-                    },
-                    Source::Config,
-                ),
-                info.config_path.clone(),
-            )],
-            table: Some(Table {
-                columns: vec![
-                    Column {
-                        title: "Setting",
-                        weight: 3,
-                        min_w: 160,
-                        align: Align::Left,
-                        priority: 0,
-                    },
-                    Column {
-                        title: "Value",
-                        weight: 2,
-                        min_w: 100,
-                        align: Align::Right,
-                        priority: 0,
-                    },
-                ],
-                rows: info
-                    .settings
-                    .iter()
-                    .map(|(k, v)| Row {
-                        cells: vec![k.clone(), v.clone()],
-                        status: RowStatus::None,
-                        muted: false,
-                    })
-                    .collect(),
-                empty: None,
-            }),
-            note: Some(
-                "Settings are read-only in this version. Edit kalkan.toml and restart KALKAN. \
-                 Editing in the app arrives in Phase 5."
-                    .into(),
-            ),
+            header_buttons: 3,
+            settings_rows: crate::settings::Field::ALL.len(),
             ..PageView::default()
         },
     }

@@ -783,7 +783,7 @@ impl WindowState {
             theme::TEXT_MUTED,
         );
 
-        if let (Some(r), Some(n)) = (l.notice, &self.ui.notice) {
+        if let (Some(r), Some(n)) = (l.notice, self.ui.visible_notice()) {
             let (bg, fg) = match n.kind {
                 NoticeKind::Info => (theme::PRIMARY_SOFT, theme::PRIMARY),
                 NoticeKind::Warning => (theme::WARNING_SOFT, theme::WARNING),
@@ -814,6 +814,7 @@ impl WindowState {
         if let (Some(r), Some(t)) = (l.table, &self.view.table) {
             p.table(t, r, l.table_rows_visible);
         }
+        self.paint_pages(&p);
         if let (Some(r), Some(note)) = (l.note, &self.view.note) {
             p.text(
                 note,
@@ -893,6 +894,9 @@ impl WindowState {
     }
 
     pub(super) fn draw_item(&self, dis: &DRAWITEMSTRUCT) {
+        if self.draw_page_item(dis) {
+            return;
+        }
         if dis.CtlType != ODT_BUTTON {
             return;
         }

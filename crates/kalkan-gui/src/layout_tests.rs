@@ -9,6 +9,9 @@ const DASH: Content = Content {
     strip: true,
     table_rows: None,
     note: false,
+    header_buttons: 0,
+    log_viewer: false,
+    settings_rows: 0,
 };
 const NETWORK: Content = Content {
     engine_panel: false,
@@ -18,6 +21,9 @@ const NETWORK: Content = Content {
     strip: false,
     table_rows: Some(12),
     note: true,
+    header_buttons: 0,
+    log_viewer: false,
+    settings_rows: 0,
 };
 const STATS: Content = Content {
     engine_panel: false,
@@ -27,24 +33,33 @@ const STATS: Content = Content {
     strip: true,
     table_rows: None,
     note: false,
+    header_buttons: 0,
+    log_viewer: false,
+    settings_rows: 0,
 };
 const SETTINGS: Content = Content {
     engine_panel: false,
-    notice: false,
+    notice: true,
     tiles: 0,
-    cards: 1,
+    cards: 0,
     strip: false,
-    table_rows: Some(6),
-    note: true,
+    table_rows: None,
+    note: false,
+    header_buttons: 3,
+    log_viewer: false,
+    settings_rows: 7,
 };
 const LOGS: Content = Content {
     engine_panel: false,
-    notice: false,
+    notice: true,
     tiles: 0,
-    cards: 3,
+    cards: 0,
     strip: false,
     table_rows: None,
-    note: true,
+    note: false,
+    header_buttons: 3,
+    log_viewer: true,
+    settings_rows: 0,
 };
 const PAGES: [Content; 5] = [DASH, NETWORK, STATS, SETTINGS, LOGS];
 
@@ -57,6 +72,11 @@ fn all_rects(l: &Layout) -> Vec<Rect> {
     v.extend(l.strip);
     v.extend(l.table);
     v.extend(l.note);
+    v.extend(l.log_toolbar);
+    v.extend(l.log_status);
+    v.extend(l.log_list);
+    v.extend(l.settings_status);
+    v.extend(l.settings_form);
     v
 }
 
@@ -253,6 +273,80 @@ fn nav_buttons_leave_the_sidebar_border_visible() {
         let l = compute(scale(1040, dpi), scale(680, dpi), dpi, DASH);
         for n in l.nav {
             assert_eq!(n.right(), l.sidebar.right() - 1, "dpi {dpi}");
+        }
+    }
+}
+
+#[test]
+fn header_buttons_are_right_aligned_inside_the_header_without_overlap() {
+    for dpi in [96, 144, 192] {
+        let l = compute(
+            scale(MIN_CLIENT_W, dpi),
+            scale(MIN_CLIENT_H, dpi),
+            dpi,
+            LOGS,
+        );
+        assert_eq!(l.header_buttons.len(), 3);
+        assert_eq!(l.header_buttons[2].right(), l.header.right());
+        for w in l.header_buttons.windows(2) {
+            assert!(w[0].right() < w[1].x);
+        }
+        // Room is left for the page title.
+        assert!(
+            l.header_buttons[0].x - l.header.x >= scale(120, dpi),
+            "dpi {dpi}"
+        );
+    }
+}
+
+#[test]
+fn log_viewer_fills_the_page_and_keeps_a_usable_list() {
+    for dpi in [96, 120, 144, 192] {
+        let (w, h) = (scale(MIN_CLIENT_W, dpi), scale(MIN_CLIENT_H, dpi));
+        let l = compute(w, h, dpi, LOGS);
+        let list = l.log_list.unwrap();
+        assert_eq!(
+            list.bottom(),
+            l.content.bottom(),
+            "list fills to the bottom"
+        );
+        assert!(
+            list.h >= 8 * scale(theme::LOG_ROW_H, dpi),
+            "dpi {dpi}: only {} px",
+            list.h
+        );
+        let search = l.log_search.unwrap();
+        assert!(
+            search.w >= scale(150, dpi),
+            "dpi {dpi}: search {} px",
+            search.w
+        );
+        assert_eq!(l.log_chips.len(), 4);
+        assert_eq!(l.log_chips[3].right(), l.content.right());
+        assert!(search.right() < l.log_chips[0].x);
+    }
+}
+
+#[test]
+fn settings_rows_fit_and_controls_leave_room_for_labels() {
+    for dpi in [96, 120, 144, 192] {
+        let (w, h) = (scale(MIN_CLIENT_W, dpi), scale(MIN_CLIENT_H, dpi));
+        let l = compute(w, h, dpi, SETTINGS);
+        assert_eq!(l.settings_rows.len(), 7);
+        assert!(
+            l.content_bottom() <= h,
+            "dpi {dpi}: {} > {h}",
+            l.content_bottom()
+        );
+        for (i, kind) in [0, 1, 1, 2, 1, 2, 2].into_iter().enumerate() {
+            let r = l.form_row(i, kind, dpi).unwrap();
+            assert!(r.row.contains(&r.control), "dpi {dpi} row {i}");
+            assert!(!r.text.intersects(&r.control));
+            assert!(
+                r.text.w >= scale(180, dpi),
+                "dpi {dpi} row {i}: label area {} px",
+                r.text.w
+            );
         }
     }
 }

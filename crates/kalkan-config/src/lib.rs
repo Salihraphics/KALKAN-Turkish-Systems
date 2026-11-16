@@ -24,8 +24,11 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// Inclusive bounds for the monitor sampling interval (milliseconds).
 pub const SAMPLE_INTERVAL_MS_RANGE: (u32, u32) = (250, 60_000);
 
-/// Inclusive bounds for the number of retained log files.
+/// Inclusive bounds for the number of archived (rotated) log files kept.
 pub const MAX_LOG_FILES_RANGE: (u16, u16) = (1, 90);
+
+/// Inclusive bounds for the size at which the active log file is rotated (MB).
+pub const MAX_FILE_SIZE_MB_RANGE: (u32, u32) = (1, 100);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -62,6 +65,39 @@ pub enum LogLevel {
     Trace,
 }
 
+impl LogLevel {
+    /// From least to most verbose.
+    pub const ALL: [LogLevel; 5] = [
+        LogLevel::Error,
+        LogLevel::Warn,
+        LogLevel::Info,
+        LogLevel::Debug,
+        LogLevel::Trace,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Error => "error",
+            LogLevel::Warn => "warn",
+            LogLevel::Info => "info",
+            LogLevel::Debug => "debug",
+            LogLevel::Trace => "trace",
+        }
+    }
+
+    /// Case-insensitive parse of `error`/`warn`/`warning`/`info`/`debug`/`trace`.
+    pub fn parse(s: &str) -> Option<LogLevel> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "error" => Some(LogLevel::Error),
+            "warn" | "warning" => Some(LogLevel::Warn),
+            "info" => Some(LogLevel::Info),
+            "debug" => Some(LogLevel::Debug),
+            "trace" => Some(LogLevel::Trace),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for LogLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -80,8 +116,11 @@ pub struct Logging {
     pub level: LogLevel,
     /// Write logs to files in the log directory (in addition to the in-app view).
     pub file_logging: bool,
-    /// How many daily log files to retain.
+    /// How many archived log files to keep (`kalkan.1.log` … `kalkan.N.log`).
     pub max_log_files: u16,
+    /// Rotate the active `kalkan.log` before it would exceed this size (MB).
+    /// Added in Phase 5; files without it get the default.
+    pub max_file_size_mb: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +155,7 @@ impl Default for Logging {
             level: LogLevel::Info,
             file_logging: true,
             max_log_files: 7,
+            max_file_size_mb: 5,
         }
     }
 }
@@ -201,6 +241,34 @@ impl Config {
         Ok(())
     }
 
+    /// Copy an existing (e.g. invalid) configuration file to
+    /// `kalkan.toml.bak`, or `kalkan.toml.bak.2`, `.3`, … if that exists, so
+    /// overwriting it never loses what the user wrote. Returns the backup path.
+    pub fn backup_file(path: &Path) -> Result<PathBuf, ConfigError> {
+        let io_err = |source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        };
+        let mut n = 1u32;
+        let backup = loop {
+            let mut name = path.as_os_str().to_owned();
+            name.push(".bak");
+            if n > 1 {
+                name.push(format!(".{n}"));
+            }
+            let candidate = PathBuf::from(name);
+            if !candidate.exists() {
+                break candidate;
+            }
+            n += 1;
+            if n > 1000 {
+                return Err(io_err(io::Error::other("too many backup files")));
+            }
+        };
+        fs::copy(path, &backup).map_err(io_err)?;
+        Ok(backup)
+    }
+
     pub fn to_toml_string(&self) -> Result<String, ConfigError> {
         toml::to_string_pretty(self).map_err(|e| ConfigError::Serialize(e.to_string()))
     }
@@ -237,6 +305,17 @@ impl Config {
                 message: format!(
                     "{} is out of range (allowed {lo}..={hi})",
                     self.logging.max_log_files
+                ),
+            });
+        }
+
+        let (lo, hi) = MAX_FILE_SIZE_MB_RANGE;
+        if !(lo..=hi).contains(&self.logging.max_file_size_mb) {
+            issues.push(ValidationIssue {
+                key: "logging.max_file_size_mb",
+                message: format!(
+                    "{} is out of range (allowed {lo}..={hi})",
+                    self.logging.max_file_size_mb
                 ),
             });
         }
@@ -403,6 +482,60 @@ mod tests {
         let path = std::env::temp_dir().join("kalkan-should-not-exist.toml");
         assert!(matches!(c.save(&path), Err(ConfigError::Invalid(_))));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn phase4_files_without_new_keys_still_load() {
+        // Exactly what Phase 1-4 wrote with --print-default-config.
+        let old = "schema_version = 1\n\n[general]\nstart_engine_on_launch = false\n\n\
+                   [monitor]\nsample_interval_ms = 1000\n\n[logging]\nlevel = \"info\"\n\
+                   file_logging = true\nmax_log_files = 7\n\n[ui]\nstart_minimized = false\n";
+        let c = Config::from_toml_str(old).unwrap();
+        assert_eq!(c.logging.max_file_size_mb, 5, "new key gets its default");
+        assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn max_file_size_range() {
+        let (lo, hi) = MAX_FILE_SIZE_MB_RANGE;
+        for v in [lo, hi] {
+            let s = format!("[logging]\nmax_file_size_mb = {v}\n");
+            assert!(Config::from_toml_str(&s).is_ok(), "{v}");
+        }
+        for v in [0, hi + 1] {
+            let s = format!("[logging]\nmax_file_size_mb = {v}\n");
+            let Err(ConfigError::Invalid(i)) = Config::from_toml_str(&s) else {
+                panic!("{v} should be invalid")
+            };
+            assert_eq!(i[0].key, "logging.max_file_size_mb");
+        }
+    }
+
+    #[test]
+    fn log_level_parse_and_names() {
+        for l in LogLevel::ALL {
+            assert_eq!(LogLevel::parse(l.as_str()), Some(l));
+            assert_eq!(l.to_string(), l.as_str());
+        }
+        assert_eq!(LogLevel::parse(" WARNING "), Some(LogLevel::Warn));
+        assert_eq!(LogLevel::parse("loud"), None);
+    }
+
+    #[test]
+    fn backup_never_overwrites_previous_backups() {
+        let dir = std::env::temp_dir().join(format!("kalkan-cfg-bak-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(CONFIG_FILE_NAME);
+        fs::write(&path, "broken = [").unwrap();
+        let b1 = Config::backup_file(&path).unwrap();
+        fs::write(&path, "broken again").unwrap();
+        let b2 = Config::backup_file(&path).unwrap();
+        assert_ne!(b1, b2);
+        assert_eq!(fs::read_to_string(&b1).unwrap(), "broken = [");
+        assert_eq!(fs::read_to_string(&b2).unwrap(), "broken again");
+        assert!(b2.to_string_lossy().ends_with(".bak.2"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

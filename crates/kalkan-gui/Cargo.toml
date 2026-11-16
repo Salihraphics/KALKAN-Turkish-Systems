@@ -10,6 +10,10 @@ publish.workspace = true
 
 [dependencies]
 kalkan-core.workspace = true
+# Settings form validation uses the loader's own rules; the log viewer reads
+# the in-memory log buffer. Both crates are platform independent.
+kalkan-config.workspace = true
+kalkan-logging.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
@@ -20,8 +24,11 @@ features = [
     "Win32_Graphics_Dwm",             # DwmFlush (self-test screenshots)
     "Win32_Graphics_Gdi",
     "Win32_Storage_Xps",              # PrintWindow (self-test screenshots)
+    "Win32_System_DataExchange",      # clipboard (copy log entry)
+    "Win32_System_Memory",            # GlobalAlloc for clipboard data
     "Win32_System_LibraryLoader",     # GetModuleHandleW
     "Win32_UI_Controls",              # DRAWITEMSTRUCT, owner-draw states
+    "Win32_UI_Controls_Dialogs",      # Save As dialog (log export)
     "Win32_UI_HiDpi",                 # per-monitor DPI awareness
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",

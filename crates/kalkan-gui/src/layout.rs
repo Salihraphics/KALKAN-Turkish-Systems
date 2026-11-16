@@ -52,6 +52,32 @@ pub struct Content {
     /// `Some(n)`: a table with `n` data rows (0 = empty-state message).
     pub table_rows: Option<usize>,
     pub note: bool,
+    /// Action buttons right-aligned in the page header.
+    pub header_buttons: usize,
+    /// Logs page: toolbar, status line and a list filling the rest.
+    pub log_viewer: bool,
+    /// Settings page: status card and this many form rows.
+    pub settings_rows: usize,
+}
+
+/// One settings row: the whole row and the control area on its right.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FormRow {
+    pub row: Rect,
+    /// Text (label + help) area.
+    pub text: Rect,
+    /// Right-aligned control area (width depends on the control kind).
+    pub control: Rect,
+}
+
+/// Width (DIP) of a settings control by kind: 0 = level segments, 1 = number,
+/// 2 = switch.
+pub fn control_width_dip(kind: usize) -> i32 {
+    match kind {
+        0 => 5 * theme::SEGMENT_W + 4 * 4,
+        1 => theme::NUMBER_W,
+        _ => theme::SWITCH_W,
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -76,6 +102,35 @@ pub struct Layout {
     /// Data rows that fit in `table` (the rest are summarised as "+N more").
     pub table_rows_visible: usize,
     pub note: Option<Rect>,
+    pub header_buttons: Vec<Rect>,
+    pub log_toolbar: Option<Rect>,
+    pub log_search: Option<Rect>,
+    pub log_chips: Vec<Rect>,
+    pub log_status: Option<Rect>,
+    pub log_list: Option<Rect>,
+    pub settings_status: Option<Rect>,
+    pub settings_form: Option<Rect>,
+    /// Row frames; controls are placed by the caller with `form_row`.
+    pub settings_rows: Vec<Rect>,
+}
+
+impl Layout {
+    /// Split a settings row into text and control areas for a control kind.
+    pub fn form_row(&self, i: usize, kind: usize, dpi: u32) -> Option<FormRow> {
+        let row = *self.settings_rows.get(i)?;
+        let s = |d| scale(d, dpi);
+        let pad = s(16);
+        let cw = s(control_width_dip(kind)).min((row.w - 2 * pad).max(0));
+        let ch = s(theme::BTN_H) - s(4);
+        let control = Rect::new(row.right() - pad - cw, row.y + (row.h - ch) / 2, cw, ch);
+        let text = Rect::new(
+            row.x + pad,
+            row.y,
+            (control.x - s(16) - row.x - pad).max(0),
+            row.h,
+        );
+        Some(FormRow { row, text, control })
+    }
 }
 
 /// Number of grid columns that fit in `content_w` physical pixels, balanced
@@ -149,6 +204,19 @@ pub fn compute(client_w: i32, client_h: i32, dpi: u32, c: Content) -> Layout {
     let header = Rect::new(content.x, content.y, content.w, s(theme::HEADER_H));
     let mut y = header.bottom() + gap;
 
+    // Header actions: right-aligned, vertically centred on the title line.
+    let mut header_buttons = Vec::with_capacity(c.header_buttons);
+    {
+        let (bw, bh) = (s(theme::ACTION_W), s(theme::BTN_H));
+        let mut x = header.right();
+        for _ in 0..c.header_buttons {
+            x -= bw;
+            header_buttons.push(Rect::new(x, header.y + s(2), bw, bh));
+            x -= s(8);
+        }
+        header_buttons.reverse();
+    }
+
     let notice = c.notice.then(|| {
         let r = Rect::new(content.x, y, content.w, s(theme::NOTICE_H));
         y = r.bottom() + gap;
@@ -199,6 +267,50 @@ pub fn compute(client_w: i32, client_h: i32, dpi: u32, c: Content) -> Layout {
         .note
         .then(|| Rect::new(content.x, y, content.w, s(theme::NOTE_H)));
 
+    // Logs page.
+    let (mut log_toolbar, mut log_search, mut log_chips, mut log_status, mut log_list) =
+        (None, None, Vec::new(), None, None);
+    if c.log_viewer {
+        let tb = Rect::new(content.x, y, content.w, s(theme::TOOLBAR_H));
+        let (cw, cgap) = (s(theme::CHIP_W), s(6));
+        let chips_w = 4 * cw + 3 * cgap;
+        let mut x = tb.right() - chips_w;
+        for _ in 0..4 {
+            log_chips.push(Rect::new(x, tb.y, cw, tb.h));
+            x += cw + cgap;
+        }
+        log_search = Some(Rect::new(tb.x, tb.y, (tb.w - chips_w - s(12)).max(0), tb.h));
+        log_toolbar = Some(tb);
+        let st = Rect::new(
+            content.x,
+            tb.bottom() + s(10),
+            content.w,
+            s(theme::LOG_STATUS_H),
+        );
+        log_status = Some(st);
+        let top = st.bottom() + s(6);
+        log_list = Some(Rect::new(
+            content.x,
+            top,
+            content.w,
+            (content.bottom() - top).max(0),
+        ));
+    }
+
+    // Settings page.
+    let (mut settings_status, mut settings_form, mut settings_rows) = (None, None, Vec::new());
+    if c.settings_rows > 0 {
+        let st = Rect::new(content.x, y, content.w, s(theme::SETTINGS_STATUS_H));
+        settings_status = Some(st);
+        let fy = st.bottom() + gap;
+        let rh = s(theme::SETTINGS_ROW_H);
+        let form = Rect::new(content.x, fy, content.w, c.settings_rows as i32 * rh + s(8));
+        for i in 0..c.settings_rows as i32 {
+            settings_rows.push(Rect::new(form.x, form.y + s(4) + i * rh, form.w, rh));
+        }
+        settings_form = Some(form);
+    }
+
     Layout {
         client,
         sidebar,
@@ -218,6 +330,15 @@ pub fn compute(client_w: i32, client_h: i32, dpi: u32, c: Content) -> Layout {
         table,
         table_rows_visible,
         note,
+        header_buttons,
+        log_toolbar,
+        log_search,
+        log_chips,
+        log_status,
+        log_list,
+        settings_status,
+        settings_form,
+        settings_rows,
     }
 }
 
@@ -228,6 +349,8 @@ impl Layout {
             self.note,
             self.table,
             self.strip,
+            self.settings_form,
+            self.log_status,
             self.cards.last().copied(),
             self.tiles.last().copied(),
             self.engine_panel,

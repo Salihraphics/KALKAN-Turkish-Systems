@@ -65,7 +65,9 @@ dependencies = [
 name = "kalkan-gui"
 version = "0.1.0"
 dependencies = [
+ "kalkan-config",
  "kalkan-core",
+ "kalkan-logging",
  "thiserror",
  "tracing",
  "windows",

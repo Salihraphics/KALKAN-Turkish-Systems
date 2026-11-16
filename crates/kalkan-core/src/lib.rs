@@ -22,7 +22,8 @@ pub use kalkan_net::{InterfaceKind, InterfaceStatus, NetworkStatus};
 
 pub use engine::{
     live_engine_threads, EngineHandle, EngineSpec, NetworkFactory, ProbeFactory, ProcessProbe,
-    ProcessSample, ENGINE_NAME, ENGINE_SCOPE, ENGINE_TITLE,
+    ProcessSample, ENGINE_NAME, ENGINE_SCOPE, ENGINE_TITLE, MAX_SAMPLE_INTERVAL,
+    MIN_SAMPLE_INTERVAL,
 };
 pub use lifecycle::{EngineState, Lifecycle, Transition, TransitionError};
 pub use link::{EngineLink, Waker};

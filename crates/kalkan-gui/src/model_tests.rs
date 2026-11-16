@@ -310,24 +310,34 @@ fn only_dashboard_has_engine_panel() {
 }
 
 #[test]
-fn settings_and_logs_pages() {
-    let mut i = info();
-    i.settings = vec![("Log level".into(), "info".into())];
-    i.config_path = "C:\\x\\kalkan.toml".into();
-    let v = page_view(Page::Settings, &UiState::default(), &i);
-    let t = v.table.unwrap();
-    assert_eq!(
-        t.rows[0].cells,
-        vec!["Log level".to_owned(), "info".to_owned()]
-    );
-    assert_eq!(v.cards[0].detail, "C:\\x\\kalkan.toml");
+fn logs_and_settings_are_control_pages() {
+    let v = page_view(Page::Logs, &UiState::default(), &info());
+    assert!(v.log_viewer && v.header_buttons == 3 && v.cards.is_empty());
+    let v = page_view(Page::Settings, &UiState::default(), &info());
+    assert_eq!(v.settings_rows, crate::settings::Field::ALL.len());
+    assert!(v.table.is_none() && v.cards.is_empty());
+}
 
-    i.log_file = None;
-    i.log_note = "Disabled by logging.file_logging".into();
-    let v = page_view(Page::Logs, &UiState::default(), &i);
-    let card = v.cards.iter().find(|c| c.title == "Log file").unwrap();
-    assert!(!card.value.is_real());
-    assert_eq!(card.detail, "Disabled by logging.file_logging");
+#[test]
+fn notices_show_on_the_right_page() {
+    let mut ui = UiState::default();
+    ui.apply(Event::DiagnosticMessage {
+        level: DiagLevel::Info,
+        message: "Wi-Fi connected".into(),
+    });
+    ui.set_page_notice(Page::Settings, NoticeKind::Info, "Settings saved.");
+    assert_eq!(
+        ui.visible_notice().unwrap().message,
+        "Wi-Fi connected",
+        "Dashboard shows engine notices"
+    );
+    ui.navigate(Page::Settings);
+    assert_eq!(ui.visible_notice().unwrap().message, "Settings saved.");
+    ui.navigate(Page::Logs);
+    assert!(
+        ui.visible_notice().is_none(),
+        "engine notices stay on the Dashboard"
+    );
 }
 
 #[test]

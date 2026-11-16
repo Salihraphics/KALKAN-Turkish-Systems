@@ -19,8 +19,9 @@ use std::time::Duration;
 mod netcli;
 
 use kalkan_config::{AppDirs, Config};
+use kalkan_gui::settings::{FileState, SettingsState};
 use kalkan_gui::{AppInfo, RunOptions};
-use kalkan_logging::Output;
+use kalkan_logging::{LoggingHandle, Output, RotationPolicy};
 
 const USAGE: &str = "\
 KALKAN — Complex network technology. Simple user experience.
@@ -142,10 +143,14 @@ fn main() -> ExitCode {
         }
     };
 
-    let config = match Config::load(&config_path) {
-        Ok(c) => c,
-        // Never fall back silently: the user must know their file is ignored.
-        Err(e) => return fail(&args, &format!("{e}")),
+    // --check-config and --benchmark need a valid file. GUI runs (and the
+    // self-test) start with defaults instead, show the exact problem on the
+    // Settings page and leave the file untouched until the user saves.
+    let (config, file_state) = match Config::load(&config_path) {
+        Ok(c) if config_path.is_file() => (c, FileState::Loaded),
+        Ok(c) => (c, FileState::Missing),
+        Err(e) if args.check_config || args.benchmark => return fail(&args, &format!("{e}")),
+        Err(e) => (Config::default(), FileState::Invalid(e.to_string())),
     };
 
     if args.check_config {
@@ -156,9 +161,12 @@ fn main() -> ExitCode {
         return netcli::run_benchmark(&config, engine_spec(&config));
     }
 
-    let log = init_logging(&args, &config);
+    let (log, logging) = init_logging(&args, &config);
     kalkan_logging::install_panic_hook();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), platform = %kalkan_win::platform_description(), "KALKAN starting");
+    if let FileState::Invalid(e) = &file_state {
+        tracing::warn!(error = %e, "configuration file is invalid; using defaults (file left untouched)");
+    }
 
     let mut info = app_info(&config, &config_path, &log);
     // The self-test drives the engine itself and must start from Stopped.
@@ -178,14 +186,29 @@ fn main() -> ExitCode {
 
     // The GUI owns the engine; dropping it (when the window closes) joins the
     // engine threads.
-    match kalkan_gui::run(info, engine, opts) {
+    let services = kalkan_gui::Services {
+        logging: logging.clone(),
+        settings: SettingsState::new(
+            config_path.display().to_string(),
+            file_state,
+            config.clone(),
+        ),
+        config_path: config_path.clone(),
+    };
+    let result = kalkan_gui::run(info, engine, services, opts);
+    let code = match result {
         Ok(None) => {
             tracing::info!("KALKAN exited cleanly");
             ExitCode::SUCCESS
         }
         Ok(Some(report)) => print_self_test(&report),
         Err(e) => fail(&args, &format!("{e}")),
+    };
+    // Flush and close the log file last; later events are counted as dropped.
+    if let Some(l) = logging {
+        l.close();
     }
+    code
 }
 
 /// Report a fatal error where the user will see it: the terminal for CLI
@@ -228,7 +251,7 @@ fn choose_log_output(args: &Args, config: &Config, dirs: Option<&AppDirs>) -> Lo
     match dirs {
         Some(d) => LogChoice {
             output: Output::File(d.log_dir.join(kalkan_logging::LOG_FILE_NAME)),
-            note: "Renamed to kalkan.log.old when larger than 5 MB".into(),
+            note: "Rotated by size; see Settings for the limit and archives kept".into(),
         },
         None => LogChoice {
             output: Output::Stderr,
@@ -237,18 +260,36 @@ fn choose_log_output(args: &Args, config: &Config, dirs: Option<&AppDirs>) -> Lo
     }
 }
 
-fn init_logging(args: &Args, config: &Config) -> LogChoice {
-    let mut choice = choose_log_output(args, config, AppDirs::from_env().as_ref());
-    if let Err(e) = kalkan_logging::init(config.logging.level, &choice.output) {
-        // Never lose this silently: fall back to stderr and say why.
-        let _ = kalkan_logging::init(config.logging.level, &Output::Stderr);
-        tracing::error!(%e, "file logging unavailable; using stderr");
-        choice = LogChoice {
-            output: Output::Stderr,
-            note: format!("Log file unavailable: {e}"),
-        };
+fn log_settings(config: &Config, output: Output) -> kalkan_logging::LogSettings {
+    kalkan_logging::LogSettings {
+        level: config.logging.level,
+        output,
+        rotation: RotationPolicy::from_mb(
+            config.logging.max_file_size_mb,
+            config.logging.max_log_files,
+        ),
     }
-    choice
+}
+
+fn init_logging(args: &Args, config: &Config) -> (LogChoice, Option<Arc<LoggingHandle>>) {
+    let choice = choose_log_output(args, config, AppDirs::from_env().as_ref());
+    match kalkan_logging::init(&log_settings(config, choice.output.clone())) {
+        Ok(h) => (choice, Some(Arc::new(h))),
+        Err(e) => {
+            // Never lose this silently: fall back to stderr and say why.
+            let fallback = kalkan_logging::init(&log_settings(config, Output::Stderr))
+                .ok()
+                .map(Arc::new);
+            tracing::error!(%e, "file logging unavailable; using stderr");
+            (
+                LogChoice {
+                    output: Output::Stderr,
+                    note: format!("Log file unavailable: {e}"),
+                },
+                fallback,
+            )
+        }
+    }
 }
 
 /// Real process metrics for the engine, read through Win32 calls.

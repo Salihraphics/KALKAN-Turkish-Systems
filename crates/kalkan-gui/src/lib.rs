@@ -11,7 +11,9 @@
 #![deny(unsafe_code)]
 
 pub mod layout;
+pub mod logview;
 pub mod model;
+pub mod settings;
 pub mod theme;
 
 #[cfg(windows)]
@@ -35,6 +37,22 @@ pub struct RunOptions {
     /// Process CPU time source for the self-test's CPU measurement (the GUI
     /// itself does not query the OS for metrics).
     pub cpu_time: Option<fn() -> Option<std::time::Duration>>,
+}
+
+/// What the GUI needs besides the engine: the logging handle (log viewer,
+/// live level/rotation changes) and the settings state (Settings page).
+pub struct Services {
+    pub logging: Option<std::sync::Arc<kalkan_logging::LoggingHandle>>,
+    pub settings: settings::SettingsState,
+    pub config_path: PathBuf,
+}
+
+impl std::fmt::Debug for Services {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Services")
+            .field("config_path", &self.config_path)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One self-test assertion.
@@ -74,15 +92,16 @@ pub enum GuiError {
 pub fn run(
     info: AppInfo,
     engine: Box<dyn EngineLink>,
+    services: Services,
     opts: RunOptions,
 ) -> Result<Option<SelfTestReport>, GuiError> {
     #[cfg(windows)]
     {
-        win32::run(info, engine, opts)
+        win32::run(info, engine, services, opts)
     }
     #[cfg(not(windows))]
     {
-        let _ = (info, engine, opts);
+        let _ = (info, engine, services, opts);
         Err(GuiError::Unsupported)
     }
 }

@@ -822,3 +822,31 @@ fn running_for_is_reported_by_the_engine() {
     assert!(!evs.is_empty());
     shutdown_clean(h);
 }
+
+#[test]
+fn sample_interval_change_applies_on_next_start_and_is_validated() {
+    // Long interval: only the initial sample arrives quickly.
+    let mut h = spawn(EngineSpec {
+        sample_interval: Duration::from_secs(30),
+        ..ok_spec()
+    });
+    h.send(Command::SetSampleInterval(Duration::from_millis(1)));
+    let evs = until(&mut h, |e| matches!(e, Event::DiagnosticMessage { .. }));
+    assert!(diag(&evs)[0].contains("ignored"), "{:?}", diag(&evs));
+    h.send(Command::SetSampleInterval(Duration::from_millis(250)));
+    start_running(&mut h);
+    // With 250 ms we see the second (CPU-bearing) sample well within 10 s.
+    until(
+        &mut h,
+        |e| matches!(e, Event::Status(s) if s.cpu_percent.is_some()),
+    );
+    // Changing it while running reports that it applies on the next start.
+    h.send(Command::SetSampleInterval(Duration::from_secs(5)));
+    let evs = until(&mut h, |e| matches!(e, Event::DiagnosticMessage { .. }));
+    assert!(diag(&evs)
+        .last()
+        .unwrap()
+        .contains("next time the engine starts"));
+    assert!(states(&evs).is_empty(), "no state change");
+    shutdown_clean(h);
+}

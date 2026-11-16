@@ -100,6 +100,19 @@ pub const BTN_W: i32 = 104;
 pub const BTN_H: i32 = 36;
 pub const RADIUS: i32 = 10;
 pub const ICON: i32 = 16;
+/// Header action buttons (Logs, Settings).
+pub const ACTION_W: i32 = 96;
+/// Log viewer toolbar and rows.
+pub const TOOLBAR_H: i32 = 36;
+pub const CHIP_W: i32 = 76;
+pub const LOG_STATUS_H: i32 = 28;
+pub const LOG_ROW_H: i32 = 24;
+/// Settings page.
+pub const SETTINGS_STATUS_H: i32 = 64;
+pub const SETTINGS_ROW_H: i32 = 48;
+pub const SEGMENT_W: i32 = 50;
+pub const NUMBER_W: i32 = 110;
+pub const SWITCH_W: i32 = 44;
 
 /// Minimum client area. Every page's content fits at this size.
 pub const MIN_CLIENT_W: i32 = 760;

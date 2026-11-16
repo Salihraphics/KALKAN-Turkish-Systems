@@ -103,14 +103,20 @@ jobs:
           Get-Content selftest.txt, selftest-err.txt
           if ($p.ExitCode -ne 0) { throw "GUI self-test failed with exit code $($p.ExitCode)" }
           # Repeat without screenshots to catch intermittent lifecycle bugs.
+          # Run 2 starts from the file run 1 saved; run 3 starts from an
+          # INVALID file (defaults in use, .bak kept when settings are saved).
+          Set-Content invalid.toml "[monitor]`nsample_interval_ms = 5"
           for ($i = 2; $i -le 3; $i++) {
+            $cfg = if ($i -eq 3) { 'invalid.toml' } else { 'missing.toml' }
             $p = Start-Process -FilePath ./target/release/kalkan.exe `
-                 -ArgumentList @('--config', 'missing.toml', '--self-test') `
+                 -ArgumentList @('--config', $cfg, '--self-test') `
                  -Wait -PassThru -NoNewWindow `
                  -RedirectStandardOutput "selftest-$i.txt" -RedirectStandardError "selftest-err-$i.txt"
             Select-String -Path "selftest-$i.txt" -Pattern '^result:'
             if ($p.ExitCode -ne 0) { Get-Content "selftest-$i.txt"; throw "GUI self-test run $i failed" }
           }
+          if (-not (Test-Path invalid.toml.bak)) { throw "invalid config was not backed up before saving" }
+          Write-Host "invalid.toml.bak:"; Get-Content invalid.toml.bak
       - uses: actions/upload-artifact@v5
         if: always()
         with:

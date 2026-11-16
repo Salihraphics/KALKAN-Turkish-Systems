@@ -16,6 +16,9 @@ pub enum Command {
     Stop,
     /// Request an [`Event::Status`] snapshot.
     QueryStatus,
+    /// Change the sample interval. Accepted in any state; it takes effect
+    /// the next time the engine starts (the running worker keeps its tick).
+    SetSampleInterval(std::time::Duration),
     /// Stop everything and terminate the engine threads. The last event is
     /// [`Event::ShutdownComplete`].
     Shutdown,
