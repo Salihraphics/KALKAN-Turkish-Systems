@@ -17,6 +17,10 @@ kalkan-logging.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+# The simulated long-run test drives the engine with a scripted monitor.
+kalkan-net.workspace = true
+
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = [

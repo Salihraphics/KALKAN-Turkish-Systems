@@ -38,6 +38,24 @@ pub struct RunOptions {
     /// Process CPU time source for the self-test's CPU measurement (the GUI
     /// itself does not query the OS for metrics).
     pub cpu_time: Option<fn() -> Option<std::time::Duration>>,
+    /// Run the long-running soak test for this many minutes instead of
+    /// waiting for the user (`kalkan --soak <minutes>`).
+    pub soak_minutes: Option<u32>,
+    /// Process resource counters for the soak test (supplied by the app,
+    /// like `cpu_time`).
+    pub resources: Option<fn() -> Option<Resources>>,
+}
+
+/// Process-wide resource counters, as read by the application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Resources {
+    pub cpu_time: std::time::Duration,
+    pub working_set: u64,
+    pub private_bytes: u64,
+    pub kernel_handles: u32,
+    pub gdi_objects: u32,
+    pub user_objects: u32,
+    pub threads: u32,
 }
 
 /// What the GUI needs besides the engine: the logging handle (log viewer,
@@ -69,6 +87,8 @@ pub struct SelfTestReport {
     pub screenshots: Vec<PathBuf>,
     /// Screenshot failures are reported but do not fail the self-test.
     pub screenshot_errors: Vec<String>,
+    /// Measurements to print (soak test), already printed as they happened.
+    pub notes: Vec<String>,
 }
 
 impl SelfTestReport {

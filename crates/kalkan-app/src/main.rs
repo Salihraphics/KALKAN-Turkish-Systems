@@ -36,7 +36,10 @@ OPTIONS:
     --check-config           Validate the configuration file and exit
     --print-default-config   Print the default configuration as TOML and exit
     --interfaces             List network interfaces and their counters, then exit
-    --benchmark              Measure monitoring overhead (about 25 s), then exit
+    --benchmark              Measure monitoring, logging and engine overhead
+                             (about 2 minutes), then exit
+    --soak <MINUTES>         Open the window and run the long-running soak test
+                             (real engine, monitor and log file), then exit
     --self-test              Open the window, run the scripted UI self-test, exit
     --screenshots <DIR>      With --self-test: save a BMP of each step to DIR
     -V, --version            Print version and exit
@@ -51,6 +54,7 @@ struct Args {
     interfaces: bool,
     benchmark: bool,
     self_test: bool,
+    soak: Option<u32>,
     screenshots: Option<PathBuf>,
     version: bool,
     help: bool,
@@ -64,6 +68,7 @@ impl Args {
             || self.interfaces
             || self.benchmark
             || self.self_test
+            || self.soak.is_some()
             || self.version
             || self.help
     }
@@ -81,6 +86,15 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--self-test" => a.self_test = true,
             "--interfaces" => a.interfaces = true,
             "--benchmark" => a.benchmark = true,
+            "--soak" => {
+                let m = it.next().ok_or("--soak requires a number of minutes")?;
+                a.soak = Some(
+                    m.parse::<u32>()
+                        .ok()
+                        .filter(|&m| (1..=24 * 60).contains(&m))
+                        .ok_or("--soak takes 1 to 1440 minutes")?,
+                );
+            }
             "--screenshots" => {
                 a.screenshots = Some(PathBuf::from(
                     it.next().ok_or("--screenshots requires a directory")?,
@@ -170,7 +184,8 @@ fn main() -> ExitCode {
 
     let mut info = app_info(&config, &config_path, &log);
     // The self-test drives the engine itself and must start from Stopped.
-    info.start_engine_on_launch = config.general.start_engine_on_launch && !args.self_test;
+    info.start_engine_on_launch =
+        config.general.start_engine_on_launch && !args.self_test && args.soak.is_none();
     tracing::info!(elevated = ?info.elevated, config = %config_path.display(), "start-up information gathered");
 
     let opts = RunOptions {
@@ -178,6 +193,8 @@ fn main() -> ExitCode {
         self_test: args.self_test,
         screenshot_dir: args.screenshots.clone(),
         cpu_time: Some(kalkan_win::process_cpu_time),
+        soak_minutes: args.soak,
+        resources: Some(process_resources),
     };
     let engine = match kalkan_core::EngineHandle::spawn(engine_spec(&config)) {
         Ok(h) => Box::new(h),
@@ -236,7 +253,9 @@ struct LogChoice {
 /// Console runs log to the terminal. GUI runs log to a file, because a
 /// GUI-subsystem process has no console and stderr would drop everything.
 fn choose_log_output(args: &Args, config: &Config, dirs: Option<&AppDirs>) -> LogChoice {
-    if args.is_console_run() {
+    // The soak test runs like a normal GUI start (log file with rotation),
+    // because that is the configuration it is meant to observe.
+    if args.is_console_run() && args.soak.is_none() {
         return LogChoice {
             output: Output::Stderr,
             note: "Console run: messages go to the terminal".into(),
@@ -359,8 +378,23 @@ fn app_info(config: &Config, config_path: &Path, log: &LogChoice) -> AppInfo {
     }
 }
 
+/// Resource counters for the soak test.
+fn process_resources() -> Option<kalkan_gui::Resources> {
+    let m = kalkan_win::process_memory()?;
+    let h = kalkan_win::process_handles().unwrap_or_default();
+    Some(kalkan_gui::Resources {
+        cpu_time: kalkan_win::process_cpu_time()?,
+        working_set: m.working_set,
+        private_bytes: m.private_bytes,
+        kernel_handles: h.kernel_handles,
+        gdi_objects: h.gdi_objects,
+        user_objects: h.user_objects,
+        threads: h.threads,
+    })
+}
+
 fn print_self_test(r: &kalkan_gui::SelfTestReport) -> ExitCode {
-    println!("KALKAN GUI self-test");
+    println!("KALKAN GUI self-test / soak report");
     for c in &r.checks {
         println!("  [{}] {}", if c.passed { "PASS" } else { "FAIL" }, c.name);
     }

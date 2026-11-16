@@ -123,6 +123,11 @@ impl LogView {
 
     /// Take a new snapshot unless paused or unchanged. Returns `true` if the
     /// visible rows changed.
+    /// Buffer version the view last showed (`None` before the first refresh).
+    pub fn version(&self) -> Option<u64> {
+        self.version
+    }
+
     pub fn refresh(&mut self, version: u64, snapshot: impl FnOnce() -> Vec<Arc<LogEntry>>) -> bool {
         if self.paused || self.version == Some(version) {
             return false;

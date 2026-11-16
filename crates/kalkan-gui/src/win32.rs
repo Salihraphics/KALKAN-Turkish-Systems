@@ -67,6 +67,8 @@ use crate::{Check, GuiError, RunOptions, SelfTestReport};
 mod pages;
 #[path = "win32_paint.rs"]
 mod paint;
+#[path = "win32_soak.rs"]
+mod soak;
 
 const CLASS_NAME: PCWSTR = w!("KalkanMainWindow");
 
@@ -250,6 +252,7 @@ impl WindowState {
 
     /// Recompute view + layout and move/show/enable child controls to match.
     fn relayout(&mut self) {
+        soak::RELAYOUTS.fetch_add(1, Ordering::Relaxed);
         self.view = page_view(self.ui.page, &self.ui, &self.info);
         let (w, h) = self.client_size();
         self.layout = layout::compute(w, h, self.dpi, self.content());
@@ -418,6 +421,10 @@ fn def(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
 
 fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        soak::WM_APP_PING => {
+            soak::on_ping(wp);
+            LRESULT(0)
+        }
         WM_NCCREATE => {
             // SAFETY: for WM_NCCREATE, lParam points to a CREATESTRUCTW whose
             // lpCreateParams is the `*mut CreateParams` we passed to
@@ -783,6 +790,7 @@ fn handle_with_state(
     Outcome::Done(match msg {
         WM_ERASEBKGND => LRESULT(1), // everything is painted in WM_PAINT
         WM_PAINT => {
+            let t0 = Instant::now();
             let mut ps = PAINTSTRUCT::default();
             // SAFETY: standard BeginPaint/EndPaint pairing on our window; the
             // back buffer objects are deselected and deleted before return.
@@ -800,6 +808,8 @@ fn handle_with_state(
                 }
                 let _ = EndPaint(hwnd, &ps);
             }
+            soak::PAINTS.fetch_add(1, Ordering::Relaxed);
+            soak::PAINT_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
             LRESULT(0)
         }
         WM_SIZE => {
@@ -841,7 +851,10 @@ fn handle_with_state(
         WM_DRAWITEM => {
             // SAFETY: lParam points to a DRAWITEMSTRUCT for this message.
             let dis = unsafe { &*(lp.0 as *const DRAWITEMSTRUCT) };
+            let t0 = Instant::now();
             st.draw_item(dis);
+            soak::DRAW_ITEMS.fetch_add(1, Ordering::Relaxed);
+            soak::DRAW_ITEM_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
             LRESULT(1)
         }
         WM_COMMAND => {
@@ -983,7 +996,7 @@ pub fn run(
     }
     .map_err(|e| win_err("CreateWindowExW", e))?;
 
-    let show = if opts.start_minimized && !opts.self_test {
+    let show = if opts.start_minimized && !opts.self_test && opts.soak_minutes.is_none() {
         SW_SHOWMINNOACTIVE
     } else {
         SW_SHOW
@@ -994,7 +1007,9 @@ pub fn run(
         let _ = UpdateWindow(hwnd);
     }
 
-    let report = if opts.self_test {
+    let report = if let Some(minutes) = opts.soak_minutes {
+        Some(soak::soak(hwnd, minutes, opts.resources))
+    } else if opts.self_test {
         Some(self_test(
             hwnd,
             opts.screenshot_dir.as_deref(),

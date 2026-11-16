@@ -155,6 +155,16 @@ impl LoggingHandle {
 
 /// Install the global subscriber. Call once, early in `main`.
 pub fn init(settings: &LogSettings) -> Result<LoggingHandle, LoggingError> {
+    let (dispatch, handle) = build(settings)?;
+    tracing::dispatcher::set_global_default(dispatch)
+        .map_err(|_| LoggingError::AlreadyInitialized)?;
+    Ok(handle)
+}
+
+/// Build the same subscriber [`init`] installs, without installing it.
+/// Used by the benchmark to measure logging cost with the real layer stack
+/// (`tracing::dispatcher::with_default`).
+pub fn build(settings: &LogSettings) -> Result<(tracing::Dispatch, LoggingHandle), LoggingError> {
     let buffer = LogBuffer::new(BUFFER_CAPACITY);
     let (file, history_end, writer) = match &settings.output {
         Output::Stderr => (None, 0, BoxMakeWriter::new(io::stderr)),
@@ -185,19 +195,20 @@ pub fn init(settings: &LogSettings) -> Result<LoggingHandle, LoggingError> {
         .with_ansi(matches!(settings.output, Output::Stderr))
         .with_target(true)
         .with_thread_names(true);
-    tracing_subscriber::registry()
+    let subscriber = tracing_subscriber::registry()
         .with(filter)
         .with(text)
-        .with(buffer::BufferLayer(buffer.clone()))
-        .try_init()
-        .map_err(|_| LoggingError::AlreadyInitialized)?;
-    Ok(LoggingHandle {
-        level: handle,
-        current_level: std::sync::Mutex::new(settings.level),
-        buffer,
-        file,
-        history_end,
-    })
+        .with(buffer::BufferLayer(buffer.clone()));
+    Ok((
+        tracing::Dispatch::new(subscriber),
+        LoggingHandle {
+            level: handle,
+            current_level: std::sync::Mutex::new(settings.level),
+            buffer,
+            file,
+            history_end,
+        },
+    ))
 }
 
 /// The log file path inside a log directory.

@@ -53,6 +53,35 @@ pub fn platform_description() -> String {
     format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
+/// Kernel/GDI/USER object and thread counts of this process. Used by the
+/// benchmark and the soak test to detect handle or thread leaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProcessHandles {
+    pub kernel_handles: u32,
+    pub gdi_objects: u32,
+    pub user_objects: u32,
+    pub threads: u32,
+}
+
+/// `None` if a query failed or the platform is not Windows.
+pub fn process_handles() -> Option<ProcessHandles> {
+    imp::process_handles()
+}
+
+/// Test-environment description for benchmark reports: Windows version and
+/// build (from `RtlGetVersion`, which is not subject to version lying), CPU
+/// name and logical processor count.
+pub fn environment_description() -> String {
+    let cpus = std::thread::available_parallelism().map_or(0, |n| n.get());
+    format!(
+        "{}; {}; {} logical processors; {}",
+        imp::os_version().unwrap_or_else(platform_description),
+        imp::cpu_name().unwrap_or_else(|| "CPU unknown".into()),
+        cpus,
+        std::env::consts::ARCH
+    )
+}
+
 #[cfg(windows)]
 mod imp {
     use std::ffi::c_void;
@@ -68,9 +97,12 @@ mod imp {
     use windows::Win32::System::ProcessStatus::{
         GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
     };
-    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes, OpenProcessToken};
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, GetCurrentProcessId, GetGuiResources, GetProcessHandleCount,
+        GetProcessTimes, OpenProcessToken, GR_GDIOBJECTS, GR_USEROBJECTS,
+    };
 
-    use super::ProcessMemory;
+    use super::{ProcessHandles, ProcessMemory};
 
     /// Owns a token handle and closes it on drop.
     struct OwnedHandle(HANDLE);
@@ -151,6 +183,95 @@ mod imp {
         Some(std::time::Duration::from_nanos(total.saturating_mul(100)))
     }
 
+    pub fn process_handles() -> Option<ProcessHandles> {
+        use windows::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+        };
+        let mut kernel = 0u32;
+        // SAFETY: pseudo-handle of our own process; `kernel` is a valid
+        // out-pointer for the call.
+        unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut kernel) }.ok()?;
+        // SAFETY: plain queries on our own process pseudo-handle.
+        let (gdi, user) = unsafe {
+            (
+                GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS),
+                GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS),
+            )
+        };
+        // SAFETY: the snapshot handle is owned by `OwnedHandle` and closed
+        // once; `entry` is a valid THREADENTRY32 with dwSize set.
+        let threads = unsafe {
+            let snap = OwnedHandle(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0).ok()?);
+            let pid = GetCurrentProcessId();
+            let mut entry = THREADENTRY32 {
+                dwSize: size_of::<THREADENTRY32>() as u32,
+                ..Default::default()
+            };
+            let mut n = 0u32;
+            let mut more = Thread32First(snap.0, &mut entry).is_ok();
+            while more {
+                if entry.th32OwnerProcessID == pid {
+                    n += 1;
+                }
+                more = Thread32Next(snap.0, &mut entry).is_ok();
+            }
+            n
+        };
+        Some(ProcessHandles {
+            kernel_handles: kernel,
+            gdi_objects: gdi,
+            user_objects: user,
+            threads,
+        })
+    }
+
+    pub fn os_version() -> Option<String> {
+        use windows::Wdk::System::SystemServices::RtlGetVersion;
+        use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
+        let mut v = OSVERSIONINFOW {
+            dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `v` is a valid OSVERSIONINFOW with its size set.
+        let st = unsafe { RtlGetVersion(&mut v) };
+        if st.0 != 0 {
+            return None;
+        }
+        // Build 22000 and later is Windows 11 (major version stays 10).
+        let name = match (v.dwMajorVersion, v.dwBuildNumber) {
+            (10, b) if b >= 22000 => "Windows 11 / Server 2022+".to_string(),
+            (10, _) => "Windows 10 / Server 2016-2019".to_string(),
+            (maj, _) => format!("Windows {maj}.{}", v.dwMinorVersion),
+        };
+        Some(format!(
+            "{name} (version {}.{}, build {})",
+            v.dwMajorVersion, v.dwMinorVersion, v.dwBuildNumber
+        ))
+    }
+
+    pub fn cpu_name() -> Option<String> {
+        use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+        let mut buf = [0u16; 256];
+        let mut len = (buf.len() * 2) as u32;
+        // SAFETY: `buf`/`len` describe a writable buffer that outlives the call.
+        let err = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                windows::core::w!("HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"),
+                windows::core::w!("ProcessorNameString"),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr() as *mut c_void),
+                Some(&mut len),
+            )
+        };
+        if err.0 != 0 {
+            return None;
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..end]).trim().to_string())
+    }
+
     pub fn attach_parent_console() {
         // SAFETY: plain queries/calls without pointers. A failed attach (no
         // parent console) is expected and ignored.
@@ -176,6 +297,15 @@ mod imp {
         None
     }
     pub fn attach_parent_console() {}
+    pub fn process_handles() -> Option<super::ProcessHandles> {
+        None
+    }
+    pub fn os_version() -> Option<String> {
+        None
+    }
+    pub fn cpu_name() -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -220,6 +350,20 @@ mod tests {
     #[test]
     fn process_memory_unavailable_off_windows() {
         assert!(process_memory().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn handle_counts_are_plausible_and_threads_are_counted() {
+        let a = process_handles().expect("query should succeed on Windows");
+        assert!(a.kernel_handles > 0 && a.threads >= 1, "{a:?}");
+        let t = std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_millis(300)));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let b = process_handles().unwrap();
+        // Other tests run in parallel threads, so only a lower bound is stable.
+        assert!(b.threads >= 2, "{a:?} -> {b:?}");
+        t.join().unwrap();
+        assert!(environment_description().contains("Windows"));
     }
 
     #[test]

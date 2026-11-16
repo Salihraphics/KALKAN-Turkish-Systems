@@ -68,6 +68,7 @@ dependencies = [
  "kalkan-config",
  "kalkan-core",
  "kalkan-logging",
+ "kalkan-net",
  "thiserror",
  "tracing",
  "windows",
