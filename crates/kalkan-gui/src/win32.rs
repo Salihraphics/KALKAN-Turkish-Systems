@@ -252,7 +252,13 @@ impl WindowState {
 
     /// Recompute view + layout and move/show/enable child controls to match.
     fn relayout(&mut self) {
+        let t0 = Instant::now();
+        self.relayout_inner();
         soak::RELAYOUTS.fetch_add(1, Ordering::Relaxed);
+        soak::RELAYOUT_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    fn relayout_inner(&mut self) {
         self.view = page_view(self.ui.page, &self.ui, &self.info);
         let (w, h) = self.client_size();
         self.layout = layout::compute(w, h, self.dpi, self.content());
@@ -801,8 +807,14 @@ fn handle_with_state(
                     let mem = CreateCompatibleDC(Some(hdc));
                     let bmp = Gdi(CreateCompatibleBitmap(hdc, w, h).into());
                     let old = SelectObject(mem, bmp.0);
+                    let t1 = Instant::now();
                     st.paint(mem);
+                    let t2 = Instant::now();
                     let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
+                    soak::PAINT_SETUP_NS.fetch_add((t1 - t0).as_nanos() as u64, Ordering::Relaxed);
+                    soak::PAINT_DRAW_NS.fetch_add((t2 - t1).as_nanos() as u64, Ordering::Relaxed);
+                    soak::PAINT_BLIT_NS
+                        .fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     SelectObject(mem, old);
                     let _ = DeleteDC(mem);
                 }

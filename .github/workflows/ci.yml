@@ -119,6 +119,17 @@ jobs:
           }
           if (-not (Test-Path invalid.toml.bak)) { throw "invalid config was not backed up before saving" }
           Write-Host "invalid.toml.bak:"; Get-Content invalid.toml.bak
+      - name: Short soak (2 minutes; the 30-minute soak is a separate job)
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Start-Process -FilePath ./target/release/kalkan.exe `
+               -ArgumentList @('--config', 'soak.toml', '--soak', '2') `
+               -Wait -PassThru -NoNewWindow `
+               -RedirectStandardOutput soak-short.txt -RedirectStandardError soak-short-err.txt
+          Get-Content soak-short.txt | Select-String -NotMatch '^R soak.m'
+          if ($p.ExitCode -ne 0) { throw "short soak failed with exit code $($p.ExitCode)" }
       - uses: actions/upload-artifact@v5
         if: always()
         with:
@@ -128,6 +139,7 @@ jobs:
             selftest.txt
             selftest-err.txt
             benchmark.txt
+            soak-short.txt
       - uses: actions/upload-artifact@v5
         with:
           name: kalkan-windows-x64

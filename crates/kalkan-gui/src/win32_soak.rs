@@ -44,6 +44,11 @@ pub(super) static PAINT_NS: AtomicU64 = AtomicU64::new(0);
 pub(super) static DRAW_ITEMS: AtomicU64 = AtomicU64::new(0);
 pub(super) static DRAW_ITEM_NS: AtomicU64 = AtomicU64::new(0);
 pub(super) static RELAYOUTS: AtomicU64 = AtomicU64::new(0);
+pub(super) static RELAYOUT_NS: AtomicU64 = AtomicU64::new(0);
+// WM_PAINT breakdown: back-buffer setup, drawing, BitBlt to the window.
+pub(super) static PAINT_SETUP_NS: AtomicU64 = AtomicU64::new(0);
+pub(super) static PAINT_DRAW_NS: AtomicU64 = AtomicU64::new(0);
+pub(super) static PAINT_BLIT_NS: AtomicU64 = AtomicU64::new(0);
 
 static PING_BASE: OnceLock<Instant> = OnceLock::new();
 static PINGS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
@@ -82,6 +87,7 @@ struct Counters {
     draw_items: u64,
     draw_item_ns: u64,
     relayouts: u64,
+    relayout_ns: u64,
 }
 
 fn counters() -> Counters {
@@ -91,6 +97,7 @@ fn counters() -> Counters {
         draw_items: DRAW_ITEMS.load(Ordering::Relaxed),
         draw_item_ns: DRAW_ITEM_NS.load(Ordering::Relaxed),
         relayouts: RELAYOUTS.load(Ordering::Relaxed),
+        relayout_ns: RELAYOUT_NS.load(Ordering::Relaxed),
     }
 }
 
@@ -106,6 +113,7 @@ struct Minute {
     draw_items_per_s: f64,
     relayouts_per_s: f64,
     gui_ms_per_s: f64,
+    relayout_ms_per_s: f64,
     ping_p50_ms: f64,
     ping_p99_ms: f64,
     ping_max_ms: f64,
@@ -171,6 +179,13 @@ pub(super) fn soak(
         ("frame_main_only", RDW_INVALIDATE | RDW_UPDATENOW),
     ] {
         const N: u32 = 200;
+        let parts = |s: &AtomicU64| s.load(Ordering::Relaxed);
+        let (s0, d0, b0, i0) = (
+            parts(&PAINT_SETUP_NS),
+            parts(&PAINT_DRAW_NS),
+            parts(&PAINT_BLIT_NS),
+            parts(&DRAW_ITEM_NS),
+        );
         let t0 = Instant::now();
         for _ in 0..N {
             // SAFETY: synchronous repaint of our own window; no borrow is held.
@@ -179,11 +194,16 @@ pub(super) fn soak(
             }
         }
         let ms = t0.elapsed().as_secs_f64() * 1e3 / N as f64;
-        note(
-            &mut r,
-            format!("soak: paint {key}: {ms:.3} ms per frame (n={N})"),
+        let per = |a: u64, b: u64| (a - b) as f64 / 1e6 / N as f64;
+        let (setup, draw, blit, items) = (
+            per(parts(&PAINT_SETUP_NS), s0),
+            per(parts(&PAINT_DRAW_NS), d0),
+            per(parts(&PAINT_BLIT_NS), b0),
+            per(parts(&DRAW_ITEM_NS), i0),
         );
+        note(&mut r, format!("soak: paint {key}: {ms:.3} ms per frame (n={N}): back buffer {setup:.3}, drawing {draw:.3}, blit {blit:.3}, owner-drawn controls {items:.3} ms"));
         note(&mut r, format!("R soak.paint.{key}_ms {ms:.4} ms"));
+        note(&mut r, format!("R soak.paint.{key}_draw_ms {draw:.4} ms"));
     }
 
     // ── Input-latency probe ──────────────────────────────────────────────
@@ -269,6 +289,7 @@ pub(super) fn soak(
                 as f64
                 / 1e6
                 / wall,
+            relayout_ms_per_s: (c1.relayout_ns - c0.relayout_ns) as f64 / 1e6 / wall,
             ping_p50_ms: pct(&pings, 50),
             ping_p99_ms: pct(&pings, 99),
             ping_max_ms: pct(&pings, 100),
@@ -351,7 +372,7 @@ fn format_row(m: &Minute) -> String {
             )
         });
     format!(
-        "min {:>2} {:<31} {} cpu {:6.3} % | ws {:6.2} MiB private {:6.2} MiB | handles {} gdi {} user {} threads {} | paints {:5.2}/s drawitems {:6.2}/s relayouts {:5.2}/s gui {:6.3} ms/s | input latency p50 {:.2} p99 {:.2} max {:.2} ms | log entries {}",
+        "min {:>2} {:<31} {} cpu {:6.3} % | ws {:6.2} MiB private {:6.2} MiB | handles {} gdi {} user {} threads {} | paints {:5.2}/s drawitems {:6.2}/s relayouts {:5.2}/s ({:.3} ms/s) gui {:6.3} ms/s | input latency p50 {:.2} p99 {:.2} max {:.2} ms | log entries {}",
         m.index,
         m.activity,
         if m.ok { "ok  " } else { "FAIL" },
@@ -365,6 +386,7 @@ fn format_row(m: &Minute) -> String {
         m.paints_per_s,
         m.draw_items_per_s,
         m.relayouts_per_s,
+        m.relayout_ms_per_s,
         m.gui_ms_per_s,
         m.ping_p50_ms,
         m.ping_p99_ms,
@@ -425,6 +447,11 @@ fn summarize(
         let gui = steady.iter().map(|m| m.gui_ms_per_s).sum::<f64>() / n;
         let paints = steady.iter().map(|m| m.paints_per_s).sum::<f64>() / n;
         let items = steady.iter().map(|m| m.draw_items_per_s).sum::<f64>() / n;
+        let relayout = steady.iter().map(|m| m.relayout_ms_per_s).sum::<f64>() / n;
+        note(
+            r,
+            format!("R soak.steady.relayout_ms_per_s {relayout:.3} ms"),
+        );
         note(r, format!("R soak.steady.cpu_mean_pct {cpu:.3} %"));
         note(r, format!("R soak.steady.cpu_max_pct {cpu_max:.3} %"));
         note(r, format!("R soak.steady.ping_worst_p99_ms {p99:.2} ms"));
