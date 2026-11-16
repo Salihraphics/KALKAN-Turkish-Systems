@@ -1,135 +1,198 @@
-🛡️ KALKAN
-
-Complex network technology. Simple user experience.
+🛡️ KALKAN — Turkish Systems
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge&logo=rust" />
-  <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?style=for-the-badge&logo=windows" />
-  <img src="https://img.shields.io/badge/Architecture-Native-success?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Status-Early%20Development-yellow?style=for-the-badge" />
+  <strong>A lightweight Windows network utility, built with Rust.</strong>
+  <br />
+  Developed in Türkiye 🇹🇷
 </p><p align="center">
-  <b>Lightweight. Native. Reliable.</b>
+  <img src="assets/kalkan-logo.png" alt="KALKAN Logo" width="160" />
+</p><p align="center">
+  <img src="https://img.shields.io/badge/Language-Rust-orange?logo=rust" />
+  <img src="https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows" />
+  <img src="https://img.shields.io/badge/GUI-Native%20Win32-blue" />
+  <img src="https://img.shields.io/badge/License-MIT-green" />
+  <img src="https://img.shields.io/badge/Origin-Türkiye-red" />
 </p>---
 
-⚡ What is KALKAN?
+About KALKAN
 
-KALKAN is an open-source Windows network utility built with Rust, focused on delivering a lightweight, reliable, and user-friendly networking experience.
+KALKAN is a lightweight Windows network utility developed in Türkiye using Rust.
 
-Inspired by the usability challenges of existing network tools, KALKAN aims to simplify complex networking operations through a clean native interface and an efficient background engine.
+Designed with performance, reliability, and simplicity in mind, KALKAN combines a native Windows interface with a modular Rust architecture.
 
-Our goal is simple:
+The project focuses on providing a clean and efficient experience for network monitoring, application configuration, diagnostics, and system resource management.
 
-«Make advanced network technology accessible without making the user deal with unnecessary complexity.»
+Our philosophy:
 
-🎯 Our Vision
+«Complex technology. Simple user experience.»
 
-We believe network utilities should be:
+Features
 
-- 🪶 Lightweight — Minimal RAM and CPU consumption.
-- ⚡ Fast — Efficient network processing with minimal overhead.
-- 🖥️ Native — Designed specifically for Windows.
-- 🎮 Gaming-friendly — Built with latency and system performance in mind.
-- 🔒 Reliable — No unnecessary system modifications or hidden processes.
-- 🎛️ Simple — One interface, clear controls, no confusing configuration files.
+Network Monitoring
 
-🧩 Planned Features
+- Real-time network traffic monitoring.
+- Download and upload speed tracking.
+- Network interface detection.
+- Traffic statistics and historical graphs.
+- Support for monitoring multiple network interfaces.
+- Read-only interaction with Windows network information APIs.
 
-Feature| Status
-Native Windows interface| 🟡 Planned
-Rust Core Engine| 🟡 Planned
-Start / Stop management| 🟡 Planned
-Real-time network monitoring| 🟡 Planned
-CPU & RAM monitoring| 🟡 Planned
-System tray integration| 🟡 Planned
-Gaming-focused profile| 🟡 Planned
-Advanced network modules| 🔬 Research
-DPI compatibility research| 🔬 Research
+Native Windows Interface
 
-Features are subject to development and testing.
+- Lightweight Win32 GUI.
+- Dashboard and network monitoring views.
+- Statistics and performance information.
+- Integrated log viewer.
+- Configuration management.
+- Native Windows window and taskbar icon.
 
-🏗️ Technology Stack
+Logging & Diagnostics
 
-Technology| Purpose
-🦀 Rust| Core engine
-🪟 Win32 API| Native Windows interface
-🔧 windows-rs| Windows API integration
-📦 Cargo| Build system
-📋 TOML| Configuration
-📊 tracing| Logging and diagnostics
+- INFO, WARN, ERROR, DEBUG and TRACE logging levels.
+- Searchable log viewer.
+- Log filtering and live updates.
+- Log export and clipboard support.
+- Automatic log rotation.
+- Configurable log retention.
 
-KALKAN is designed around a modular architecture, keeping the user interface independent from the network engine.
+Configuration
 
-🧠 Architecture
+- TOML-based configuration.
+- Configuration validation.
+- Atomic configuration saving.
+- Reset to default settings.
+- Recovery from invalid configuration files.
 
-KALKAN
-│
-├── GUI
-│   └── Native Windows Interface
-│
-├── CORE
-│   ├── Engine Manager
-│   ├── State Management
-│   └── Error Handling
-│
-├── NETWORK
-│   ├── Network Monitor
-│   └── Diagnostics
-│
-├── CONFIG
-│   └── Settings Manager
-│
-└── LOGS
-    └── Diagnostic System
+Performance & Reliability
 
-🎮 Gaming First
+- Event-driven GUI architecture.
+- Dedicated engine and worker threads.
+- Controlled memory usage.
+- Graceful engine shutdown.
+- Performance measurement and optimization.
 
-Gaming performance is an important design consideration.
+Technology Stack
 
-KALKAN aims to minimize unnecessary background activity and network processing overhead.
+Component| Technology
+Core language| Rust
+GUI| Native Win32 API
+Windows integration| Windows API
+Configuration| TOML
+Logging| Custom logging system
+Build system| Cargo
+CI| GitHub Actions
 
-Our performance goals include:
+Architecture
 
-- Minimal CPU overhead.
-- Low memory consumption.
-- No unnecessary packet processing.
-- Stable network behavior.
-- Measurable latency and jitter performance.
+KALKAN uses a modular Rust workspace:
 
-We don't promise zero latency overhead without testing. We measure, optimize, and verify.
+KALKAN/
+├── kalkan-app/
+├── kalkan-gui/
+├── kalkan-core/
+├── kalkan-net/
+├── kalkan-config/
+├── kalkan-logging/
+├── kalkan-win/
+├── assets/
+├── docs/
+└── Cargo.toml
 
-🔐 Security & Transparency
+Each crate has a dedicated responsibility, keeping the application modular and maintainable.
 
-Security and reliability are core principles.
+The GUI communicates with the engine through an event-driven architecture. Network monitoring and application logic remain separated from the presentation layer.
 
-- No hidden background processes.
-- No automatic antivirus disabling.
-- Explicit system permission requirements.
-- Transparent logging.
-- Documented dependencies.
-- Safe shutdown and cleanup.
+Development Status
 
-🚧 Development Status
+KALKAN is actively under development.
 
-KALKAN is currently in early development.
+Component| Status
+Rust workspace architecture| Completed
+Native Windows GUI| Completed
+Engine lifecycle management| Completed
+Read-only network monitoring| Completed
+Logging system| Completed
+Configuration management| Completed
+Performance optimization| In progress
+Security hardening| Planned
+Release and installer| Planned
 
-The initial development phase focuses on the native Windows interface, Rust core architecture, lifecycle management, and read-only network monitoring.
+Features listed as planned or in progress should not be considered available in current releases.
 
-Advanced network functionality will be researched and integrated separately after proper testing.
+Platform Support
 
-🤝 Contributing
+Platform| Status
+Windows 10/11| Primary development platform
+Linux| Future consideration
+Android| Future consideration
+iOS| Future consideration
 
-Contributions, suggestions, bug reports, and technical discussions are welcome.
+Building from Source
 
-Please check the project issues before submitting major changes.
+Requirements:
 
-📜 License
+- Rust toolchain
+- Cargo
+- Windows development environment
+- Windows target support
 
-License: To be determined.
+Clone the repository:
 
-🛡️ KALKAN
+git clone https://github.com/YOUR_USERNAME/KALKAN-Turkish-Systems.git
+cd KALKAN-Turkish-Systems
 
-Complex network technology. Simple user experience.
+Build:
+
+cargo build --release
+
+Run tests:
+
+cargo test --workspace
+
+Run formatting checks:
+
+cargo fmt --all -- --check
+
+Run Clippy:
+
+cargo clippy --workspace --all-targets -- -D warnings
+
+Performance Philosophy
+
+KALKAN is designed to remain lightweight while operating in the background.
+
+We prioritize:
+
+- Low CPU overhead.
+- Stable memory usage.
+- Efficient background processing.
+- Minimal unnecessary GUI updates.
+- Reliable long-running operation.
+
+Performance claims are evaluated through repeatable benchmarks rather than assumptions.
+
+Security & Privacy
+
+KALKAN's current network monitoring implementation is read-only.
+
+It does not currently capture, inject, modify, or block network packets.
+
+The application aims to minimize unnecessary data collection and avoid storing sensitive information in diagnostic logs.
+
+License
+
+KALKAN is licensed under the MIT License.
+
+Copyright (c) 2026 Salih Kıvanç TULUM.
+
+See the "LICENSE" (LICENSE) file for details.
+
+---
 
 <p align="center">
-  Built with 🦀 Rust
+  <strong>KALKAN</strong>
+  <br />
+  Built in Türkiye 🇹🇷
+  <br />
+  Powered by Rust 🦀
 </p>
