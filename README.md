@@ -5,7 +5,7 @@
   <br />
   Developed in Türkiye 🇹🇷
 </p><p align="center">
-  <img src="./kalkan-logo.png" alt="KALKAN Logo" width="160" />
+  <img src="./kalkan-logo_20261116_111629_0000.png" alt="KALKAN Logo" width="160" />
 </p><p align="center">
   <img src="https://img.shields.io/badge/Language-Rust-orange?logo=rust" />
   <img src="https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows" />
