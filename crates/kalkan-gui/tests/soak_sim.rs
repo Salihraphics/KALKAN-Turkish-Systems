@@ -246,14 +246,17 @@ fn simulated_long_run_has_no_memory_or_thread_growth() {
 
     // Phase 1: warm-up (every adapter/failure pattern seen at least once,
     // graph history and log buffer filled).
-    gui.run_statuses(&mut h, 3_000);
+    gui.run_statuses(&mut h, 1_000);
     for i in 0..6_000 {
         tracing::info!(i, "warm-up line");
     }
     let warm = live_kib();
 
     // Phase 2: long simulated run, measuring allocations per update.
-    const SAMPLES: u64 = 20_000;
+    // 5 000 samples cover every churn/failure pattern many times (periods
+    // 7-97 samples). Windows timers wait ~15.6 ms for a 1 ms timeout, so
+    // more would make CI slow without testing anything new.
+    const SAMPLES: u64 = 5_000;
     let (a0, v0, t0) = (
         ALLOCS.load(Ordering::Relaxed),
         gui.view_allocs,
