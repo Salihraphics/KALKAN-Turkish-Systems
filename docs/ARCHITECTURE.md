@@ -17,13 +17,14 @@ kalkan/
 ├── .github/workflows/ci.yml   Windows MSVC + Linux cross-compile CI
 ├── docs/ARCHITECTURE.md
 ├── docs/GUI.md               GUI design, layout, honesty rules, self-test
+├── assets/                   logo: source PNG, 512 px PNG, kalkan.ico (embedded in the exe)
 └── crates/
     ├── kalkan-app/      binary `kalkan`: argument parsing, wiring, startup/shutdown
     ├── kalkan-gui/      native Win32 UI: model/layout/theme (portable) + win32 (Windows)
     ├── kalkan-core/     GoodBoyDPI engine (threads), lifecycle, Command/Event, EngineLink
     ├── kalkan-net/      read-only NetworkMonitor trait, counters, rate math
     ├── kalkan-config/   TOML schema, defaults, validation, atomic save, app dirs
-    ├── kalkan-logging/  tracing subscriber (stderr or log file), panic hook
+    ├── kalkan-logging/  tracing subscriber, size-rotated log file, in-memory buffer, history
     └── kalkan-win/      Windows integration (privileges, process CPU/memory, console)
 ```
 
@@ -33,10 +34,12 @@ kalkan/
                  kalkan-app
      ┌──────┬──────┼───────┬────────┬─────────┐
      ▼      ▼      ▼       ▼        ▼         ▼
-  gui ──► core ──► net ◄── win    config ◄── logging
+    gui ─► core ─► net ◄── win    config ◄── logging
+     │                              ▲           ▲
+     └──────────────────────────────┴───────────┘   (Phase 5)
 ```
 
-* `kalkan-gui` depends **only** on `kalkan-core`. It sees network data through types that `kalkan-core` re-exports, and never calls the monitor.
+* `kalkan-gui` depends on `kalkan-core` for the engine, and since Phase 5 also on `kalkan-config` and `kalkan-logging`. **Reason:** the Settings page must validate with exactly the rules the loader uses (`Config::validate`) and save with the same atomic writer, and the Logs page reads the live `LogBuffer` and changes the level and rotation at runtime through `LoggingHandle`. Duplicating either in the GUI would let them drift. The GUI still never touches `kalkan-net` or `kalkan-win`; it sees network data only through types `kalkan-core` re-exports.
 * `kalkan-net` holds the read-only monitor trait and the platform-independent tracker. `kalkan-win` implements the trait for Windows. Only the app connects the two.
 * `kalkan-core`, `kalkan-net` and `kalkan-config` are platform independent and are unit tested on any OS.
 * `kalkan-win` pulls in the `windows` crate only under `cfg(windows)`.
@@ -52,6 +55,8 @@ kalkan/
 | UI (main) | app | Win32 message loop | `GetMessageW` |
 | `kalkan-engine` (controller) | app (spawned at start-up, joined at exit) | Sole owner of the `Lifecycle`. Turns commands and worker reports into events | `mpsc::Receiver::recv()` |
 | `goodboydpi-core` (worker) | from Start to Stop | Initialisation, then periodic process metrics | `recv_timeout(sample_interval)` on its control channel |
+| `kalkan-log-history` | once at start-up, a few ms | Reads the tail (≤ 512 KiB) of the previous log into the viewer | exits when done; joined at shutdown |
+| `kalkan-io` | per Save / Reset / Export click | Writes `kalkan.toml` or an exported log file, so the UI never blocks on disk | exits after posting `WM_APP_IO`; joined at shutdown |
 
 While the engine is stopped, two threads exist: the UI and the controller. The controller sleeps in `recv()`. While the engine is running, the worker wakes once per `monitor.sample_interval_ms` (default 1 s), reads `GetProcessTimes` and `GetProcessMemoryInfo`, and sleeps again. Nothing in the engine busy-waits or polls.
 
@@ -104,7 +109,7 @@ While the engine is stopped, two threads exist: the UI and the controller. The c
 
 | Commands (GUI → engine) | Events (engine → GUI) |
 |---|---|
-| `Start`, `Stop`, `QueryStatus`, `Shutdown` | `StateChanged{from,to}`, `EngineStarted`, `EngineStopped`, `EngineError{message}`, `DiagnosticMessage{level,message}`, `Status(EngineStatus)`, `ShutdownComplete` |
+| `Start`, `Stop`, `QueryStatus`, `Shutdown`, `SetSampleInterval(Duration)` (Phase 5; 250 ms–60 s, out-of-range values are rejected with a warning; takes effect at the next Start) | `StateChanged{from,to}`, `EngineStarted`, `EngineStopped`, `EngineError{message}`, `DiagnosticMessage{level,message}`, `Status(EngineStatus)`, `ShutdownComplete` |
 
 `EngineStatus` contains `cpu_percent`, `memory_bytes`, `network: Option<NetworkStatus>`, `network_error: Option<String>` and `running_for`. Each field is `Some` only when measured, and all of them are cleared whenever the engine leaves `Running`. Adapter changes arrive as `DiagnosticMessage` (Info), for example "Wi-Fi disconnected".
 
@@ -137,12 +142,38 @@ While the engine is stopped, two threads exist: the UI and the controller. The c
 * **Failures.** If the monitor cannot be created, or a sample fails, the engine keeps running. `network_error` carries the reason, which the GUI shows. A warning is emitted once per failure streak, and stale numbers are never shown.
 * **Cost.** Measured on the CI VM with 6 interfaces: 0.42 ms CPU per sample, about 0.04 % of one core at 1 Hz. Sampling shares the worker's existing tick. While the engine is stopped, nothing runs.
 
+## Logging (Phase 5, `kalkan-logging`)
+
+```
+ any thread: tracing::info!(…)
+   └─► Registry
+        ├─ reload::Layer<LevelFilter>      level changed at runtime (Settings → Log level)
+        ├─ fmt layer ─► SharedFile          one Mutex<RotatingFile>; one write_all per line
+        │               or stderr           (console runs: CLI options, self-test)
+        └─ BufferLayer ─► LogBuffer         ring of 5 000 Arc<LogEntry>, version counter,
+                                            waker → PostMessageW(WM_APP_LOG), coalesced
+```
+
+* **Files.** GUI runs write `%LOCALAPPDATA%\Kalkan\logs\kalkan.log` (UTC timestamps). Before a line would push it past `logging.max_file_size_mb` (1–100, default 5), it is closed and renamed to `kalkan.1.log`. Older archives shift to `kalkan.2.log`, and so on. Archives numbered above `logging.max_log_files` (1–90, default 7) are deleted.
+* **Safety rules:**
+  - Only names that parse exactly as `kalkan.<number>.log` are ever deleted. The active file, `kalkan.log.old`, `kalkan.0.log` and unrelated files are never touched; a test checks this.
+  - After a restart the existing file is continued (its size is re-read). A file that is already over the limit is rotated at open.
+  - Rotation happens under the same lock as the write, so lines are never split or interleaved. An 8-thread test checks every line in every file after ~90 rotations.
+  - If a rename fails (for example, another program holds the file open), the error is recorded, logging continues into the active file, and rotation is retried only after another quarter of the limit has been written, so a stuck file does not cost a rename attempt per line.
+  - `close()` at shutdown flushes the file; later events are counted as dropped writes instead of being written to a closed handle.
+  - Lowering retention in Settings prunes extra archives immediately.
+* **Errors are visible.** The last I/O error, rotation count, size, archives and dropped writes are in `FileStatus`, which the Logs page shows. If the log file cannot be opened at start-up, KALKAN logs to stderr and says why.
+* **Viewer data.** `LogBuffer` keeps the newest 5 000 entries; older ones are evicted and counted. The previous run's lines are parsed from the file on `kalkan-log-history` and shown as *history* (muted). Lines that cannot be parsed are skipped and counted; indented continuation lines are joined to their entry. A missing file is not an error.
+
 ## Configuration
 
-* File: `%APPDATA%\Kalkan\kalkan.toml`. GUI runs log to `%LOCALAPPDATA%\Kalkan\logs\kalkan.log`, which is renamed to `.old` above 5 MB. Console runs log to stderr.
+* File: `%APPDATA%\Kalkan\kalkan.toml`. Console runs log to stderr.
 * Unknown keys are rejected so typos surface. All range errors are reported together.
-* A missing file means defaults are used. A malformed file is an error and is **never** overwritten.
-* Saving is atomic (write a temp file, then rename).
+* **Backward compatible.** Keys added in Phase 5 (`logging.max_file_size_mb`) have serde defaults, so Phase 1–4 files load unchanged; a test checks this.
+* A missing file means defaults are used.
+* **Invalid file (Phase 5 change).** `--check-config` and `--benchmark` still exit with the full list of problems. A GUI start no longer stops: it uses defaults, logs a warning, and the Settings page shows the error. The file is **not touched** until the user saves. Saving first copies the invalid file to `kalkan.toml.bak` (`.bak.2`, `.bak.3`, … if one exists; a backup is never overwritten), so user settings are never silently discarded.
+* Saving is atomic (write a temp file, then rename) and runs on the `kalkan-io` thread.
+* Settings that apply immediately: log level, file size limit, archives kept. Sample interval applies at the next engine start (`SetSampleInterval`). File logging on/off, start engine on launch and start minimized apply at the next launch. The save confirmation names every changed setting that applies later.
 * `start_engine_on_launch` defaults to `false`, so the engine does nothing until the user presses Start. If it is set to `true`, the GUI sends Start right after its window is created.
 
 ## Extension points (Phase 7, research only)

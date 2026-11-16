@@ -9,7 +9,10 @@ The GUI is native Win32, painted with GDI. It uses no Electron, WebView2, Tauri 
 | `model` | any | Pages, `UiState`, the `Value`/`Source` honesty types, what each page shows | unit tests |
 | `layout` | any | Pure function: client size + DPI + page content → rectangles. Responsive columns | unit tests |
 | `theme` | any | Palette, DIP metrics, type scale, DPI scaling | unit tests |
-| `win32` | Windows | Window class, message loop, GDI painting, owner-drawn controls, self-test | `kalkan --self-test` on Windows CI |
+| `logview` | any | Log viewer state: level chips, search, pause, selection, export text | unit tests |
+| `settings` | any | Settings form: fields, parsing, validation through `Config::validate`, dirty/revert/defaults, save messages | unit tests |
+| `brand` | any | Embedded `kalkan.ico`: directory parser and size picker | unit tests |
+| `win32` (+ `win32_paint`, `win32_pages`) | Windows | Window class, message loop, GDI painting, owner-drawn controls, Logs/Settings controls, I/O thread, self-test | `kalkan --self-test` on Windows CI |
 
 `#![deny(unsafe_code)]` applies to the whole crate. Only `win32` is allowed `unsafe`, and every `unsafe` block carries a `SAFETY:` comment (enforced by clippy).
 
@@ -29,7 +32,8 @@ kalkan-app ─────┼──► kalkan_gui::run(info, Box<dyn EngineLink>
    engine threads ──waker()──► PostMessageW(hwnd, WM_APP_ENGINE)   (coalesced by an atomic flag)
 ```
 
-* The GUI depends only on `kalkan-core`. It never sees `kalkan-net` or `kalkan-config`. The app turns config values into display strings before passing them in.
+* The GUI depends on `kalkan-core`, and since Phase 5 on `kalkan-config` (Settings validation and saving) and `kalkan-logging` (viewer buffer, runtime level and rotation). It never sees `kalkan-net` or `kalkan-win`. See [ARCHITECTURE.md](ARCHITECTURE.md) for the reason.
+* Phase 5 adds two more posted messages: `WM_APP_LOG` (new log entries; coalesced like `WM_APP_ENGINE`) and `WM_APP_IO` (a save/export finished on the `kalkan-io` thread). If one arrives while the window state is borrowed (for example during a modal dialog), it is re-posted rather than dropped.
 * The app passes the real engine, `kalkan_core::EngineHandle` (GoodBoyDPI, see [ARCHITECTURE.md](ARCHITECTURE.md)). In `WM_CREATE` the GUI installs a waker. The engine calls it from its own thread, and it posts `WM_APP_ENGINE`. An `AtomicBool` makes a burst of events produce at most one posted message. The flag is cleared *before* draining, so an event that arrives mid-drain triggers a new post.
 * The GUI never polls the engine and never waits for it. The displayed engine state is always the last `StateChanged` or `Status` the engine sent. The GUI never sets it on its own.
 * Periodic `Status` events (one per sample interval while Running) repaint only when the Dashboard is visible.
@@ -45,7 +49,7 @@ Every value on screen is a `model::Value`:
 | `Real { source: Config }` | **CONFIG** (green) | Read from `kalkan.toml` |
 | `Unavailable { reason }` | **NOT AVAILABLE** (amber) | Shown as "Not available" plus the reason, e.g. "Requires the network monitor (Phase 4)" |
 
-CPU, memory and network cards are `Real` only when an `EngineStatus` contains that number. The unit test `no_engine_data_means_no_real_metrics_anywhere` checks every page. When the engine leaves `Running`, the metrics are cleared and the cards show "Measured while the engine is running". Network cards stay NOT AVAILABLE until the Phase 4 monitor exists.
+CPU, memory and network cards are `Real` only when an `EngineStatus` contains that number. The unit test `no_engine_data_means_no_real_metrics_anywhere` checks every page. When the engine leaves `Running`, the metrics are cleared and the cards show "Measured while the engine is running". Network cards are NOT AVAILABLE until the engine's network monitor reports data.
 
 ## Design system
 
@@ -62,7 +66,8 @@ All colours and sizes come from `theme.rs`. There are no gradients, shadows or a
 | `UPLOAD` | `#60A5FA` | Upload series, kept distinct from the teal download series |
 
 * **Contrast.** `theme::tests::text_contrast_meets_wcag` checks WCAG AA (4.5:1) for every text/surface pair the GUI uses. The lowest pair is muted text on the teal-tinted surface, at 4.94.
-* **Icons** are 16-DIP line icons drawn with GDI pens (dashboard, network, statistics, logs, settings, download, upload, CPU, memory, shield, interface, clock, peak, average, file). There are no image resources. The window and taskbar icon is the KALKAN shield, rendered with `CreateIconIndirect` at start-up.
+* **Icons** are 16-DIP line icons drawn with GDI pens (dashboard, network, statistics, logs, settings, download, upload, CPU, memory, shield, interface, clock, peak, average, file, search).
+* **Logo.** `assets/kalkan.ico` (16–256 px PNG entries, made from the supplied logo with its outer background made transparent) is compiled in with `include_bytes!`. The window and taskbar icons, the sidebar mark (32 DIP) and the engine panel mark (16 DIP) are created from it with `CreateIconFromResourceEx`, choosing the smallest entry at least as large as needed (32/48/64 px are exact at 100/150/200 %), and drawn with `DrawIconEx`. They are recreated on `WM_DPICHANGED` and destroyed with the window. If loading fails, the drawn shield is used and a warning is logged.
 * **Components:**
   - **Card**: icon, title, source badge, value and detail.
   - **Tile**: a large value with a 60-sample area graph. It is drawn from a fixed-size ring buffer into a stack `POINT` array, with no per-frame allocation.
@@ -109,7 +114,37 @@ All colours and sizes come from `theme.rs`. There are no gradients, shadows or a
   A duplicate command that gets past the buttons (for example, sent directly) is rejected by the engine. It shows an amber warning notice and the state does not change.
 * Errors from the engine (`EngineError`) appear as a red notice with the engine's real message. A successful Start or Stop clears old notices.
 * The engine panel always shows the identity **GoodBoyDPI — Rust Core Engine** and the scope line "Lifecycle and process metrics only. No DPI circumvention or packet processing." The scope line spans the full panel width below the buttons, so it stays readable at the minimum window size. A layout test checks this.
-* Settings are read-only. Editing arrives in Phase 5.
+* Keyboard: Tab/Shift+Tab reach every Logs and Settings control (search box, chips, list, Pause/Copy/Export, level segments, number boxes, switches, Save/Revert/Reset). Ctrl+C in the log list copies the selected entry.
+
+## Logs page (Phase 5)
+
+* **Real data only.** Rows come from the `tracing` events KALKAN actually emitted (`LogBuffer`), plus the previous run's file tail marked as history (muted). Nothing is generated for display.
+* **Toolbar:** a search box (case-insensitive; matches level, thread, target and message) and four level chips with live counts: ERROR, WARN, INFO, DEBUG (DEBUG includes TRACE). Header actions: **Pause/Resume**, **Copy** (selected entry), **Export**.
+* **List:** a virtual owner-drawn `LISTBOX` (`LBS_NODATA`), so 5 000 entries cost one count, not 5 000 strings. Each row: UTC time, level pill (colour per level), target (hidden when narrow), message with ellipsis. Error rows have a red bar. While scrolled to the end, the list follows new entries; scrolled up, it stays where it is. The selection is kept across refreshes.
+* **Refresh** is event-driven: the buffer's waker posts `WM_APP_LOG`, and the page re-filters only if the buffer version changed and the view is not paused. There is no timer. While paused, new entries are kept and appear on Resume.
+* **Status line:** the real log file path, size, archive count and policy ("rotates at 5 MB, keeps 7"), the last file error if any, entries shown of total, evicted count, and damaged history lines skipped. A console run says "No log file".
+* **Export** opens the standard Save As dialog (`GetSaveFileNameW`), then writes the visible entries on the `kalkan-io` thread and reports the result (path and count, or the error) in the notice bar.
+* **Empty and error states:** "No entries yet", "No entries match the search or level filter", history load errors and file errors are shown in the page, not hidden.
+
+## Settings page (Phase 5)
+
+* **Status card:** the config path and state: LOADED, DEFAULTS (no file yet; Save creates it) or INVALID (the loader's error; defaults are in use and the file is untouched until Save).
+* **Fields** (each has a label, a short help line and, when invalid, the validation message in red in place of the help):
+
+  | Setting | Control | Key | Applies |
+  |---|---|---|---|
+  | Log level | 5 segments | `logging.level` | immediately |
+  | Maximum log file size (MB, 1–100) | number box | `logging.max_file_size_mb` | immediately |
+  | Log archives to keep (1–90) | number box | `logging.max_log_files` | immediately (extra archives pruned) |
+  | Write logs to a file | switch | `logging.file_logging` | next launch |
+  | Sample interval (ms, 250–60 000) | number box | `monitor.sample_interval_ms` | next engine start |
+  | Start engine on launch | switch | `general.start_engine_on_launch` | next launch |
+  | Start minimized | switch | `ui.start_minimized` | next launch |
+
+  Every field maps to an existing, implemented config key; no setting was added without a real effect.
+* **Save** validates the whole form with `Config::validate` (the loader's rules). Errors stop the save, are shown next to each field, and summarised in a red notice; nothing is written. A valid form is saved atomically on the I/O thread; when the previous file was invalid, it is first copied to `kalkan.toml.bak`. The notice confirms the save and names settings that apply later.
+* **Revert** restores the last saved values. **Reset defaults** asks for confirmation (`MessageBoxW`, Yes/No), then saves the defaults and applies them.
+* Save is enabled when the form differs from the saved configuration (or the file is invalid), Revert when the form differs, Reset defaults when the saved or edited values are not already the defaults. All three are disabled while a save is running. Copy needs a selected row; Export needs at least one visible entry.
 
 ## Resource use
 
@@ -132,6 +167,14 @@ All colours and sizes come from `theme.rs`. There are no gradients, shadows or a
 * If the config fails to load during a normal GUI start, a message box shows the problem. It is not printed to an invisible stderr.
 
 ## Self-test (`kalkan --self-test --screenshots <dir>`)
+
+Phase 5 adds these checks (the run uses the real window, engine and logger):
+
+* **Logs:** the page shows real engine entries ("engine started"); the list box row count equals the filtered entries; an upper-case search finds entries case-insensitively; turning INFO and DEBUG chips off hides them; a paused view does not change while a marker is logged, and Resume shows it; Copy puts exactly the selected entry on the clipboard; Export writes exactly the text that was visible when it ran, off the UI thread.
+* **Settings:** the configuration state is recorded; an out-of-range value ("0" MB) is rejected with an explanation and the file is byte-for-byte unchanged; a valid save (12 MB, debug level) is on disk and the log level changes live; Reset to defaults writes the defaults and re-applies the Info level. When the run starts from an invalid file, the `.bak` copy must exist (CI run 3 starts from `sample_interval_ms = 5`).
+* **Logo:** the embedded logo loaded for the sidebar, the panel and both window icons.
+
+The modal dialogs themselves (Save As, the Reset confirmation) are not clicked by the self-test; it calls the code paths behind them.
 
 In Phase 4 the self-test has **47 checks**, and CI runs it 3 times per build. On top of the Phase 3 steps it now:
 
@@ -162,9 +205,11 @@ Screenshots are uploaded as the `gui-screenshots` CI artifact.
 * No scrolling. Long interface lists end in "+N more"; enlarge the window to see everything.
 * No interface selection. The Network page shows an overview of all interfaces, and the totals follow the counting rules.
 * Hover feedback is limited to the buttons (sidebar, Start, Stop). Cards and table rows are not interactive.
-* The window icon is generated at runtime. There is no `.ico` resource embedded in the executable, so Explorer shows the default program icon for `kalkan.exe`.
+* The logo is used for the window and taskbar, but the executable has no icon *resource* (no `.rc` build step), so Explorer still shows the default program icon for `kalkan.exe` itself.
 * Dark theme only. The app does not follow the Windows light/dark setting.
 * There is no system tray.
-* Logs are not shown in the app yet. GUI runs write to `%LOCALAPPDATA%\Kalkan\logs\kalkan.log`, and the Logs page shows that path. The in-app viewer is Phase 5.
+* Log timestamps are UTC (as in the file), not local time.
+* The log list uses the classic Win32 scroll bar, which is not themed dark.
+* Switches and level segments are owner-drawn buttons: screen readers get their names but not their on/off state.
 * CPU and memory show KALKAN's own process, not the whole system.
 * The graphs auto-scale with a 1 KB/s floor and have no axis labels; they show the trend, not exact values.

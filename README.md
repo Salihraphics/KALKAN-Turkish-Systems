@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/kalkan-logo.png" width="128" alt="KALKAN logo" /></p>
+
 # 🛡️ KALKAN
 
 **Complex network technology. Simple user experience.**
@@ -6,7 +8,7 @@
   <img src="https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge&logo=rust" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?style=for-the-badge&logo=windows" />
   <img src="https://img.shields.io/badge/Architecture-Native-success?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Status-Phase%204%20of%207-yellow?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Status-Phase%205%20of%207-yellow?style=for-the-badge" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" />
 </p>
 
@@ -34,8 +36,8 @@ KALKAN is built in phases. A feature is marked ✅ only after it has been compil
 | 2 | Native Win32 GUI | ✅ Done |
 | 3 | Core engine lifecycle: GoodBoyDPI (threaded) | ✅ Done |
 | 4 | Read-only network monitoring and UI refinement | ✅ Done |
-| 5 | Logging (files, rotation, in-app view) and configuration UI | ⏳ Next |
-| 6 | Performance benchmarking | 🟡 Planned |
+| 5 | Logging (files, rotation, in-app view) and configuration UI | ✅ Done |
+| 6 | Performance benchmarking | ⏳ Next |
 | 7 | DPI research and controlled integration planning | 🔬 Research |
 
 ### Screenshots
@@ -45,6 +47,10 @@ Captured automatically by `kalkan --self-test` on the Windows CI runner (CI run 
 <p align="center">
   <img src="docs/screenshots/dashboard-running.png" width="720" alt="Dashboard: GoodBoyDPI running, live download/upload/CPU/memory cards, active interface strip" />
 </p>
+
+| Logs (real entries, level chips, search) | Settings (editable, validated) |
+|---|---|
+| <img src="docs/screenshots/logs.png" width="420" alt="Logs page with level chips, search box and log entries" /> | <img src="docs/screenshots/settings-invalid.png" width="420" alt="Settings page rejecting an out-of-range value" /> |
 
 | Network Monitoring (real interfaces) | Statistics (this session) |
 |---|---|
@@ -85,7 +91,10 @@ KALKAN reads the interface counters Windows already keeps, using IP Helper `GetI
 | Process metrics (KALKAN's own CPU and working set) | ✅ | Windows unit test and self-test |
 | **Refined native GUI:** teal design tokens, line icons, state pill, hover and hand cursor, runtime window icon, live Dashboard, Network page with graphs and interface table, Statistics, Logs, Settings | ✅ | 31 model/layout/theme tests (including WCAG AA contrast for every text/surface pair, and every page fitting at minimum size at 96 to 192 DPI), plus the **47-check** `--self-test`, run 3× per CI build |
 | Display scaling | ⚠️ partial | Layout is unit-tested at 96, 120, 144, 168 and 192 DPI. On Windows, the real DPI-change code path was exercised by sending `WM_DPICHANGED` (150 %, screenshot above). The runner's display itself is 96 DPI, so a real high-DPI monitor has not been tested |
-| GUI-mode log file, `start_engine_on_launch`, start-up error dialog | ⚠️ | Unit-tested where possible. Not exercised by CI, which runs only console paths |
+| **Log rotation and retention:** size limit, numbered archives, retention, never deleting the active or unrelated files, restart, rename failure, concurrent writers, shutdown while logging | ✅ | 20 `kalkan-logging` tests (rotation, buffer, parsing, history, runtime reload), repeated 40× locally without a failure |
+| **Logs page:** real entries, level chips, search, pause/resume, copy, export, file status | ✅ | 8 `logview` tests and the self-test on Windows (clipboard and exported file compared byte-for-byte) |
+| **Settings page:** load, edit, validate, save, revert, reset to defaults, live apply, invalid-file backup | ✅ | 16 config and 10 settings-form tests; self-test saves to disk, rejects bad input, resets, and CI run 3 starts from an invalid file and checks the `.bak` |
+| GUI-mode log file, `start_engine_on_launch`, start-up error dialog, Save As and Reset dialogs | ⚠️ | Unit-tested where possible. CI runs log to the console, and the self-test calls the code behind the two dialogs instead of clicking them |
 
 **Measurements.** These were taken on the GitHub Actions `windows-latest` VM, CI run 15 unless noted. They are single runs, not a controlled benchmark:
 
@@ -108,9 +117,15 @@ KALKAN reads the interface counters Windows already keeps, using IP Helper `GetI
 
 Wi-Fi, disconnects, reconnects, adapter removal and counter resets are covered by the simulated-adapter tests only.
 
+### Logs and settings
+
+* **Log files** (GUI runs): `%LOCALAPPDATA%\Kalkan\logs\kalkan.log`. Before a line would make it larger than **Maximum log file size** (default 5 MB), it becomes `kalkan.1.log` and older archives move up; only **Log archives to keep** (default 7) are kept. KALKAN only ever deletes files named exactly `kalkan.<number>.log`, never the active log. File errors are shown on the Logs page, never swallowed.
+* **Logs page:** every entry KALKAN logged this run, plus the end of the previous run's file (shown muted). Filter by level, search, pause, copy an entry (Ctrl+C), export to a text file. Timestamps are UTC.
+* **Settings page:** log level, file size, archives, file logging, sample interval, start engine on launch, start minimized. Input is validated with the same rules as the config loader before anything is written. The confirmation says which settings apply immediately and which at the next engine start or launch. **Reset defaults** asks first.
+* **Invalid `kalkan.toml`:** the window still opens with defaults and shows the error on the Settings page. The file is not touched until you save, and then the old file is kept as `kalkan.toml.bak`.
+
 ### Not implemented yet
 
-- The in-app log viewer, daily rotation and retention (`logging.max_log_files`), and settings editing (Phase 5).
 - Scrolling: very long interface lists are cut off with "+N more"; enlarge the window to see all of them. There is also no light theme and no system tray.
 - Any DPI-related functionality (Phase 7, research only). "DPI" in GoodBoyDPI is part of an internal name only.
 
@@ -120,13 +135,13 @@ Wi-Fi, disconnects, reconnects, adapter removal and counter resets are covered b
 kalkan-app ──► kalkan-gui ──► kalkan-core      GoodBoyDPI engine; GUI only speaks EngineLink
      │
      ├──► kalkan-net      read-only counters → rates/totals (NetTracker), no packet API
-     ├──► kalkan-config   TOML + validation
-     ├──► kalkan-logging  tracing → stderr or log file
+     ├──► kalkan-config   TOML + validation (also used by the GUI's Settings page)
+     ├──► kalkan-logging  tracing → stderr or rotated log file + in-app buffer (also used by the GUI)
      └──► kalkan-win      Windows: GetIfTable2 monitor, privileges, process CPU/memory
 ```
 
 * **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: the full design, the lifecycle diagram, the threading model and the extension points.
-* **[docs/GUI.md](docs/GUI.md)**: GUI structure, layout, the rules that keep displayed data honest, and the self-test.
+* **[docs/GUI.md](docs/GUI.md)**: GUI structure, layout, the Logs and Settings pages, the rules that keep displayed data honest, and the self-test.
 
 ## 🔧 Building
 
@@ -164,7 +179,7 @@ kalkan --self-test --screenshots shots   # scripted UI check (used by CI)
 
 `kalkan.exe` is a Windows GUI program. When you run CLI options from a terminal, it attaches to that terminal to print its output.
 
-By default the configuration lives at `%APPDATA%\Kalkan\kalkan.toml`. If the file is missing, defaults are used. If the file is invalid, KALKAN lists every problem and exits. It never overwrites your file.
+By default the configuration lives at `%APPDATA%\Kalkan\kalkan.toml`. If the file is missing, defaults are used. If it is invalid, `--check-config` lists every problem and exits; the window opens with defaults and shows the problem, and saving keeps the old file as `kalkan.toml.bak`.
 
 ## 🎮 Gaming first
 
@@ -181,7 +196,7 @@ Performance is a requirement, not an afterthought:
 - No undocumented system modifications. No drivers are installed in Phases 1–6.
 - Administrator privileges are not required for monitoring, and the current privilege level is shown to the user.
 - `unsafe` code is confined to `kalkan-win` and the GUI's `win32` module, and every block is documented with a `SAFETY:` comment. All other crates and modules forbid or deny `unsafe`.
-- Dependencies are small and well known: `windows`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`.
+- Dependencies are small and well known: `windows`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`. Phase 5 added no new third-party crate; log rotation, the viewer buffer and ICO loading are written in-tree.
 
 ## 🤝 Contributing
 
